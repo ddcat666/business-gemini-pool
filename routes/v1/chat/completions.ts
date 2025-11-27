@@ -347,9 +347,6 @@ function createStreamResponse(
                       image_url: {
                         url: mediaUrl,
                       },
-                      // 传递 mime_type 和 filename 给前端
-                      mime_type: img.mime_type,
-                      filename: img.filename,
                     },
                   },
                   finish_reason: null,

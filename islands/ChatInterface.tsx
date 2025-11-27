@@ -162,11 +162,16 @@ export default function ChatInterface() {
               aiContent += content;
             } else if (content.type === "image_url") {
               // 图片/视频对象
+              const url = content.image_url.url;
+              // 根据 URL 扩展名判断文件类型
+              const isVideo = /\.(mp4|webm|ogg|mov|avi|mkv)$/i.test(url);
+              const filename = url.split('/').pop() || "generated_file";
+
               aiImages.push({
-                id: content.image_url.url,
-                url: content.image_url.url,
-                filename: content.filename || "generated_file",
-                mime_type: content.mime_type || "image/png",
+                id: url,
+                url: url,
+                filename: filename,
+                mime_type: isVideo ? "video/mp4" : "image/png",
               });
             }
 
@@ -214,17 +219,22 @@ export default function ChatInterface() {
       // 纯文本格式
       textContent = messageContent;
     } else if (Array.isArray(messageContent)) {
-      // 数组格式（包含文本和图片）
+      // 数组格式（包含文本和图片/视频）
       const imageItems: any[] = [];
       for (const item of messageContent) {
         if (item.type === "text") {
           textContent += item.text;
         } else if (item.type === "image_url") {
+          const url = item.image_url.url;
+          // 根据 URL 扩展名判断文件类型
+          const isVideo = /\.(mp4|webm|ogg|mov|avi|mkv)$/i.test(url);
+          const filename = url.split('/').pop() || "generated_file";
+
           imageItems.push({
-            id: item.image_url.url,
-            url: item.image_url.url,
-            filename: "generated_image.png",
-            mime_type: "image/png",
+            id: url,
+            url: url,
+            filename: filename,
+            mime_type: isVideo ? "video/mp4" : "image/png",
           });
         }
       }
