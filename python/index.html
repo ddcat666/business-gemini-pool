@@ -1,0 +1,1391 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Business Gemini Pool 管理控制台</title>
+    <style>
+        /* [OPTIMIZATION] 1. 全局样式优化与变量调整 */
+        :root {
+            /* 核心颜色保持不变 */
+            --primary: #4285f4;
+            --primary-hover: #3367d6;
+            --primary-light: rgba(66, 133, 244, 0.1);
+            --success: #34a853;
+            --success-light: rgba(52, 168, 83, 0.1);
+            --danger: #ea4335;
+            --danger-light: rgba(234, 67, 53, 0.1);
+            --warning: #fbbc04;
+            --warning-light: rgba(251, 188, 4, 0.1);
+
+            /* [NEW] 引入更精细的变量控制 */
+            --radius-sm: 6px;
+            --radius-md: 12px; /* 增大圆角，更柔和 */
+            --radius-lg: 16px;
+            --transition-ease: all 0.25s cubic-bezier(0.4, 0, 0.2, 1); /* [NEW] 现代化的缓动函数 */
+
+            --font-main: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; /* [NEW] 引入更适合UI的字体 */
+        }
+
+        /* [OPTIMIZATION] 2. Light & Dark Theme 优化，增强对比度和质感 */
+        [data-theme="light"] {
+            --bg-color: #f7f8fc; /* 更柔和的背景色 */
+            --card-bg: #ffffff;
+            --text-main: #1f2328;
+            --text-muted: #656d76;
+            --border: #e4e7eb; /* 更浅的边框色 */
+            --hover-bg: #f2f3f5;
+            --input-bg: #ffffff;
+            --shadow-sm: 0 1px 2px 0 rgba(27, 31, 35, 0.04);
+            --shadow-md: 0 4px 8px 0 rgba(27, 31, 35, 0.06), 0 1px 2px 0 rgba(27, 31, 35, 0.05); /* 更柔和的阴影 */
+            --shadow-lg: 0 10px 20px 0 rgba(27, 31, 35, 0.07), 0 3px 6px 0 rgba(27, 31, 35, 0.05);
+        }
+
+        [data-theme="dark"] {
+            --bg-color: #1a1b1e;
+            --card-bg: #242528;
+            --text-main: #e8eaed;
+            --text-muted: #9aa0a6;
+            --border: #3a3c40;
+            --hover-bg: #303134;
+            --input-bg: #2f3033;
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.1);
+            --shadow-md: 0 4px 8px 0 rgba(0, 0, 0, 0.15), 0 1px 2px 0 rgba(0, 0, 0, 0.1);
+            --shadow-lg: 0 10px 20px 0 rgba(0, 0, 0, 0.2), 0 3px 6px 0 rgba(0, 0, 0, 0.15);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: var(--font-main);
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            min-height: 100vh;
+            transition: background-color 0.3s, color 0.3s;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 32px; /* 增加页面内边距 */
+        }
+
+        /* [OPTIMIZATION] 3. Header 重新设计，更简洁大气 */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 32px;
+            /* 移除背景和阴影，使其融入页面 */
+        }
+
+        .header-left { display: flex; align-items: center; gap: 16px; }
+
+        .logo {
+            width: 44px;
+            height: 44px;
+            background: linear-gradient(135deg, #4285f4, #34a853, #fbbc04, #ea4335);
+            border-radius: var(--radius-md);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 22px;
+            transform: rotate(-10deg); /* [NEW] 增加一点趣味性 */
+            transition: var(--transition-ease);
+        }
+        .logo:hover { transform: rotate(0deg) scale(1.05); }
+
+        .header h1 {
+            font-size: 26px; /* 增大标题字号 */
+            font-weight: 600;
+            color: var(--text-main);
+        }
+
+        .header h1 span {
+            color: var(--text-muted);
+            font-weight: 400;
+            font-size: 16px;
+            margin-left: 10px;
+        }
+
+        .header-right { display: flex; align-items: center; gap: 16px; }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: var(--success-light);
+            border: 1px solid rgba(52, 168, 83, 0.2);
+            border-radius: 50px; /* 改为胶囊形状 */
+            font-size: 14px;
+            color: var(--success);
+            font-weight: 500;
+        }
+        .status-indicator::before {
+            content: ''; width: 8px; height: 8px;
+            background: var(--success); border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.7; transform: scale(0.9); } }
+
+        .theme-toggle {
+            width: 44px; height: 44px; border: 1px solid var(--border);
+            background: var(--card-bg); border-radius: var(--radius-md);
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+            font-size: 20px; transition: var(--transition-ease);
+        }
+        .theme-toggle:hover { background: var(--hover-bg); border-color: var(--primary); transform: translateY(-2px); }
+
+        /* [OPTIMIZATION] 4. Tabs 重新设计，更现代、更 subtle */
+        .tabs {
+            display: flex;
+            gap: 16px;
+            border-bottom: 1px solid var(--border); /* 底部线条导航 */
+            margin-bottom: 32px;
+        }
+        .tab {
+            padding: 14px 4px; /* 减少水平padding，通过gap控制间距 */
+            border: none; border-bottom: 2px solid transparent;
+            background: transparent; color: var(--text-muted);
+            font-size: 15px; font-weight: 500;
+            cursor: pointer; border-radius: 0;
+            transition: var(--transition-ease);
+            display: flex; align-items: center; justify-content: center;
+            gap: 8px;
+        }
+        .tab:hover { color: var(--primary); }
+        .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+        .tab-icon { font-size: 20px; }
+
+
+        /* Status Badge */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .badge::before {
+            content: '';
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+        }
+
+        .badge-success {
+            background: var(--success-light);
+            color: var(--success);
+        }
+
+        .badge-success::before {
+            background: var(--success);
+        }
+
+        .badge-danger {
+            background: var(--danger-light);
+            color: var(--danger);
+        }
+
+        .badge-danger::before {
+            background: var(--danger);
+        }
+
+        .badge-warning {
+            background: var(--warning-light);
+            color: #b06000;
+        }
+
+        .badge-warning::before {
+            background: var(--warning);
+        }
+        
+        /* [OPTIMIZATION] 5. 动画效果增强 */
+        .tab-content { display: none; }
+        .tab-content.active { display: block; animation: contentFadeIn 0.5s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+        @keyframes contentFadeIn { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* [OPTIMIZATION] 6. Card 样式优化 */
+        .card {
+            background: var(--card-bg);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-md);
+            border: 1px solid var(--border);
+            margin-bottom: 32px;
+            overflow: hidden;
+            transition: var(--transition-ease);
+        }
+        .card:hover { border-color: var(--primary-light); box-shadow: var(--shadow-lg); }
+
+        .card-header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 20px 24px; border-bottom: 1px solid var(--border);
+        }
+        .card-title {
+            font-size: 18px; font-weight: 600; color: var(--text-main);
+            display: flex; align-items: center; gap: 12px;
+        }
+        .card-title-icon { font-size: 22px; color: var(--text-muted); }
+        .card-body { padding: 24px; }
+
+        /* [OPTIMIZATION] 7. Button 样式优化 */
+        .btn {
+            padding: 10px 20px; border: none; border-radius: var(--radius-md);
+            cursor: pointer; font-size: 14px; font-weight: 500;
+            display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+            transition: var(--transition-ease); text-decoration: none;
+        }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+
+        .btn-outline {
+            background: transparent; color: var(--text-muted);
+            border: 1px solid var(--border);
+        }
+        .btn-outline:hover:not(:disabled) { border-color: var(--text-main); color: var(--text-main); }
+        /* 其他按钮颜色保持 */
+        .btn-success { background: var(--success-light); color: var(--success); border: 1px solid rgba(52, 168, 83, 0.2); }
+        .btn-success:hover:not(:disabled) { background: var(--success); color: white; border-color: var(--success); }
+        .btn-danger { background: var(--danger-light); color: var(--danger); border: 1px solid rgba(234, 67, 53, 0.2); }
+        .btn-danger:hover:not(:disabled) { background: var(--danger); color: white; border-color: var(--danger); }
+        
+        .btn-sm { padding: 6px 14px; font-size: 13px; border-radius: var(--radius-sm); }
+        .btn-icon { width: 32px; height: 32px; padding: 0; border-radius: var(--radius-md); display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; }
+        .btn-warning { background: #fff3cd; color: #856404; border: 1px solid rgba(133, 100, 4, 0.2); }
+        .btn-warning:hover:not(:disabled) { background: #ffc107; color: #212529; border-color: #ffc107; }
+
+        /* [OPTIMIZATION] 8. Table 样式优化，增强可读性 */
+        .table-container { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th {
+            text-align: left; padding: 16px 24px; font-size: 13px;
+            font-weight: 500; color: var(--text-muted); text-transform: uppercase;
+            letter-spacing: 0.5px; background: transparent; /* 移除背景色 */
+            border-bottom: 2px solid var(--border); /* 加粗底部边框 */
+        }
+        td {
+            padding: 18px 24px; border-bottom: 1px solid var(--border);
+            font-size: 14px; color: var(--text-main);
+            transition: background-color 0.2s;
+        }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: var(--hover-bg); }
+
+        /* [OPTIMIZATION] 9. Form 样式优化 */
+        .form-group { 
+            display: flex;
+            flex-direction: column;
+            margin-bottom: 20px; 
+        }
+        .form-group label,
+        .form-label { 
+            display: block;
+            margin-bottom: 12px; 
+            font-size: 14px; 
+            font-weight: 600; 
+            color: var(--text-main);
+            letter-spacing: 0.2px;
+        }
+        .form-group input, .form-group textarea, .form-group select,
+        .form-input,
+        .form-textarea {
+            width: 100%;
+            padding: 14px 16px; 
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text-main);
+            font-size: 14px;
+            transition: var(--transition-ease);
+            box-sizing: border-box;
+            line-height: 1.5;
+        }
+        .form-textarea {
+            min-height: 90px;
+            resize: vertical;
+            font-family: inherit;
+        }
+        .form-group input:focus, .form-group textarea:focus, .form-group select:focus {
+            outline: none; 
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--primary-light), 0 1px 2px rgba(0,0,0,0.05) inset;
+        }
+        .form-group input:disabled {
+            background: var(--hover-bg);
+            color: var(--text-muted);
+            cursor: not-allowed;
+        }
+        .form-group small { 
+            display: block;
+            margin-top: 6px; 
+            font-size: 13px; 
+            color: var(--text-muted);
+        }
+        .form-row { 
+            display: grid; 
+            grid-template-columns: 1fr 1fr; 
+            gap: 24px; 
+        }
+        
+        /* Settings Section 样式 */
+        .settings-section {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 28px;
+            margin-bottom: 28px;
+        }
+        .settings-section:last-child {
+            margin-bottom: 0;
+        }
+        .settings-section h3 {
+            font-size: 17px;
+            font-weight: 600;
+            color: var(--text-main);
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+        }
+        .settings-section .form-group {
+            margin-bottom: 24px;
+        }
+        .settings-section .form-group:last-of-type {
+            margin-bottom: 20px;
+        }
+
+        /* [OPTIMIZATION] 10. Modal 动画与样式优化 */
+        .modal {
+            display: flex; /* 改为flex，便于控制 */
+            align-items: center; justify-content: center;
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.4); backdrop-filter: blur(5px);
+            z-index: 1000; opacity: 0; visibility: hidden;
+            transition: opacity 0.3s, visibility 0.3s;
+        }
+        .modal.show { opacity: 1; visibility: visible; }
+        .modal-content {
+            background: var(--card-bg); border-radius: var(--radius-lg);
+            width: 600px; max-width: 90vw; max-height: 90vh;
+            overflow-y: auto; box-shadow: var(--shadow-lg);
+            transform: translateY(20px) scale(0.98);
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .modal.show .modal-content { transform: translateY(0) scale(1); }
+        .modal-header { padding: 24px; border-bottom: 1px solid var(--border); }
+        .modal-header h3 { font-size: 20px; font-weight: 600; display: inline-block; }
+        .modal-close {
+            width: 36px; height: 36px; border: none; background: transparent;
+            color: var(--text-muted); cursor: pointer; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 22px; transition: var(--transition-ease);
+            float: right;
+        }
+        .modal-close:hover { background: var(--hover-bg); color: var(--text-main); transform: rotate(90deg); }
+        .modal-body { padding: 24px; }
+        .modal-footer {
+            display: flex; justify-content: flex-end; gap: 12px;
+            padding: 20px 24px; border-top: 1px solid var(--border);
+            background: var(--hover-bg);
+            border-bottom-left-radius: var(--radius-lg);
+            border-bottom-right-radius: var(--radius-lg);
+        }
+
+
+        /* [OPTIMIZATION] 11. Stats Card 优化 */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 24px;
+            margin-bottom: 32px;
+        }
+        .stat-card {
+            background: var(--card-bg); border: 1px solid var(--border);
+            border-radius: var(--radius-lg); padding: 24px;
+            display: flex; flex-direction: column; /* 垂直布局 */
+            align-items: flex-start; gap: 16px;
+            transition: var(--transition-ease);
+            /* [NEW] 入场动画 */
+            opacity: 0;
+            transform: translateY(20px);
+            animation: fadeIn-up 0.5s ease-out forwards;
+        }
+        /* [NEW] Staggered Animation for Stats Cards */
+        .stat-card:nth-child(1) { animation-delay: 0.1s; }
+        .stat-card:nth-child(2) { animation-delay: 0.2s; }
+        .stat-card:nth-child(3) { animation-delay: 0.3s; }
+        .stat-card:nth-child(4) { animation-delay: 0.4s; }
+
+        @keyframes fadeIn-up {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .stat-card:hover { transform: translateY(-5px); box-shadow: var(--shadow-md); border-color: var(--primary); }
+
+        .stat-info-top { display: flex; justify-content: space-between; align-items: center; width: 100%; }
+        .stat-info-top p { font-size: 14px; font-weight: 500; color: var(--text-muted); }
+        
+        .stat-icon {
+            width: 40px; height: 40px; border-radius: var(--radius-md);
+            display: flex; align-items: center; justify-content: center; font-size: 20px;
+        }
+
+        .stat-info-bottom h3 { font-size: 32px; font-weight: 600; color: var(--text-main); }
+        .stat-icon.blue { background: var(--primary-light); color: var(--primary); }
+        .stat-icon.green { background: var(--success-light); color: var(--success); }
+        .stat-icon.red { background: var(--danger-light); color: var(--danger); }
+        .stat-icon.yellow { background: var(--warning-light); color: #b06000; }
+        
+        /* 其他样式保持或微调 */
+        .badge {
+            padding: 5px 12px; border-radius: 50px;
+            font-size: 12px; font-weight: 500;
+        }
+        .empty-state { text-align: center; padding: 80px 20px; color: var(--text-muted); }
+        .empty-state-icon { font-size: 56px; margin-bottom: 20px; opacity: 0.4; }
+
+        .toast {
+            position: fixed; bottom: 32px; left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: var(--card-bg); border: 1px solid var(--border);
+            border-radius: var(--radius-md); padding: 16px 24px;
+            box-shadow: var(--shadow-lg); min-width: 320px;
+            z-index: 2000; opacity: 0; visibility: hidden;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex; align-items: center; gap: 12px;
+        }
+        .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; visibility: visible; }
+        
+        /* [NEW] SVG Icon Styles */
+        .icon {
+            width: 1em;
+            height: 1em;
+            stroke-width: 2;
+            fill: none;
+            stroke: currentColor;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container { padding: 24px 16px; }
+            .header { flex-direction: column; gap: 24px; text-align: center; }
+            .tabs {
+                gap: 8px;
+                /* [NEW] 允许在移动端横向滚动 */
+                overflow-x: auto;
+                white-space: nowrap;
+                -ms-overflow-style: none; /* IE and Edge */
+                scrollbar-width: none; /* Firefox */
+            }
+            .tabs::-webkit-scrollbar { display: none; } /* Chrome, Safari, and Opera */
+            .tab { flex-shrink: 0; }
+            .form-row { grid-template-columns: 1fr; }
+            .stats-grid { gap: 16px; }
+        }
+    </style>
+</head>
+<body>
+    <!-- [NEW] SVG Icon Definitions -->
+    <svg width="0" height="0" style="display: none;">
+        <symbol id="icon-users" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></symbol>
+        <symbol id="icon-robot" viewBox="0 0 24 24"><path d="M12 8V4H8"></path><rect x="4" y="12" width="16" height="8" rx="2"></rect><path d="M2 12h20"></path><path d="M12 12V8a4 4 0 0 0-4-4"></path></symbol>
+        <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 0 2l-.15.08a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l-.22-.38a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1 0-2l.15-.08a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></symbol>
+        <symbol id="icon-server" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></symbol>
+        <symbol id="icon-list" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></symbol>
+        <symbol id="icon-plus" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></symbol>
+        <symbol id="icon-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></symbol>
+        <symbol id="icon-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></symbol>
+        <symbol id="icon-refresh" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></symbol>
+        <symbol id="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></symbol>
+        <symbol id="icon-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></symbol>
+        <symbol id="icon-message" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></symbol>
+        <symbol id="icon-play" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"></polygon></symbol>
+        <symbol id="icon-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></symbol>
+        <symbol id="icon-zap" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></symbol>
+    </svg>
+
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <div class="logo">G</div>
+                <h1>Business Gemini Pool <span>管理控制台</span></h1>
+            </div>
+            <div class="header-right">
+                <div class="status-indicator" id="serviceStatus">服务运行中</div>
+                <a href="chat_history.html" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px; text-decoration: none; display: flex; align-items: center; gap: 6px;" title="进入在线对话">
+                    <svg class="icon" style="width: 16px; height: 16px;"><use xlink:href="#icon-message"></use></svg>
+                    在线对话
+                </a>
+                <button class="theme-toggle" onclick="toggleTheme()" title="切换主题">
+                    <span id="themeIconContainer">
+                        <svg class="icon"><use xlink:href="#icon-sun"></use></svg>
+                    </span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('accounts')">
+                <svg class="icon tab-icon"><use xlink:href="#icon-users"></use></svg>
+                账号管理
+            </button>
+            <button class="tab" onclick="switchTab('models')">
+                <svg class="icon tab-icon"><use xlink:href="#icon-robot"></use></svg>
+                模型管理
+            </button>
+            <button class="tab" onclick="switchTab('settings')">
+                <svg class="icon tab-icon"><use xlink:href="#icon-settings"></use></svg>
+                系统设置
+            </button>
+        </div>
+
+        <!-- 账号管理 -->
+        <div id="accounts" class="tab-content active">
+            <!-- Stats -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-info-top">
+                        <p>总账号数</p>
+                        <div class="stat-icon blue"><svg class="icon"><use xlink:href="#icon-users"></use></svg></div>
+                    </div>
+                    <div class="stat-info-bottom">
+                        <h3 id="totalAccounts">0</h3>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info-top">
+                        <p>可用账号</p>
+                        <div class="stat-icon green"><svg class="icon"><use xlink:href="#icon-check"></use></svg></div>
+                    </div>
+                    <div class="stat-info-bottom">
+                        <h3 id="availableAccounts">0</h3>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info-top">
+                        <p>不可用账号</p>
+                        <div class="stat-icon red"><svg class="icon"><use xlink:href="#icon-x"></use></svg></div>
+                    </div>
+                    <div class="stat-info-bottom">
+                        <h3 id="unavailableAccounts">0</h3>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info-top">
+                        <p>当前轮训索引</p>
+                        <div class="stat-icon yellow"><svg class="icon"><use xlink:href="#icon-refresh"></use></svg></div>
+                    </div>
+                    <div class="stat-info-bottom">
+                        <h3 id="currentIndex">0</h3>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <svg class="icon card-title-icon"><use xlink:href="#icon-list"></use></svg>
+                        账号列表
+                    </div>
+                    <button class="btn btn-primary" onclick="showAddAccountModal()">
+                        <svg class="icon"><use xlink:href="#icon-plus"></use></svg>
+                        添加账号
+                    </button>
+                </div>
+                <div class="table-container">
+                    <table id="accountsTable">
+                        <thead>
+                            <tr>
+                                <th>序号</th>
+                                <th>Team ID</th>
+                                <th>User Agent</th>
+                                <th>状态</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="accountsTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 模型管理 (HTML结构类似，图标已替换) -->
+        <div id="models" class="tab-content">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <svg class="icon card-title-icon"><use xlink:href="#icon-robot"></use></svg>
+                        模型列表
+                    </div>
+                    <button class="btn btn-primary" onclick="showAddModelModal()">
+                        <svg class="icon"><use xlink:href="#icon-plus"></use></svg>
+                        添加模型
+                    </button>
+                </div>
+                <div class="table-container">
+                    <table id="modelsTable">
+                        <thead>
+                            <tr>
+                                <th>模型ID</th>
+                                <th>名称</th>
+                                <th>描述</th>
+                                <th>上下文长度</th>
+                                <th>最大Token</th>
+                                <th>状态</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="modelsTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 系统设置 (HTML结构类似，图标已替换) -->
+        <div id="settings" class="tab-content">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                         <svg class="icon card-title-icon"><use xlink:href="#icon-settings"></use></svg>
+                        系统配置
+                    </div>
+                </div>
+                <div class="card-body">
+                    <form id="settingsForm">
+                        <div class="settings-section">
+                            <h3>代理设置</h3>
+                            <div class="form-group">
+                                <label class="form-label" for="proxyUrl">代理地址</label>
+                                <input type="text" class="form-input" id="proxyUrl" placeholder="http://127.0.0.1:7890">
+                                <small>用于访问Google API的代理服务器地址</small>
+                                <div class="proxy-status" id="proxyStatus"></div>
+                            </div>
+                            <div style="display: flex; gap: 12px;">
+                                <button type="button" class="btn btn-outline" onclick="testProxy()">
+                                    测试代理
+                                </button>
+                                <button type="button" class="btn btn-primary" onclick="saveSettings()">
+                                    保存设置
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3><svg class="icon" style="width: 1em; height: 1em; vertical-align: -2px; margin-right: 8px;"><use xlink:href="#icon-server"></use></svg>服务信息</h3>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label class="form-label">服务端口</label>
+                                    <input type="text" class="form-input" value="8000" disabled>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">API地址</label>
+                                    <input type="text" class="form-input" value="http://localhost:8000/v1" disabled>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-section">
+                            <h3>配置文件</h3>
+                             <div class="form-group">
+                                <label class="form-label" for="configJson">当前配置 (JSON)</label>
+                                <textarea class="form-textarea" id="configJson" rows="15" readonly></textarea>
+                                <small>配置文件路径: business_gemini_session.json</small>
+                            </div>
+                             <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                                <button type="button" class="btn btn-outline" onclick="refreshConfig()">
+                                    刷新配置
+                                </button>
+                                <button type="button" class="btn btn-outline" onclick="downloadConfig()">
+                                    下载配置
+                                </button>
+                                <button type="button" class="btn btn-primary" onclick="uploadConfig()">
+                                    导入配置
+                                </button>
+                                <input type="file" id="configFileInput" accept=".json" style="display: none;" onchange="handleConfigUpload(event)">
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模态框 (已优化关闭按钮) -->
+    <div class="modal" id="addAccountModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>添加账号</h3>
+                <button class="modal-close" onclick="closeModal('addAccountModal')" title="关闭">&times;</button>
+            </div>
+            <!-- Modal Body and Footer ... (No functional changes needed) -->
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label" for="newTeamId">Team ID</label>
+                    <input type="text" class="form-input" id="newTeamId" placeholder="输入Team ID">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="newSecureCses">Cookie中的__Secure-C_SES</label>
+                    <textarea class="form-textarea" id="newSecureCses" placeholder="输入Cookie中的__Secure-C_SES" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="newHostCoses">Cookie中的__Host-C_OSES</label>
+                    <textarea class="form-textarea" id="newHostCoses" placeholder="输入Cookie中的__Host-C_OSES" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="newCsesidx">CSESIDX</label>
+                    <input type="text" class="form-input" id="newCsesidx" placeholder="输入CSESIDX">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="newUserAgent">User Agent</label>
+                    <input type="text" class="form-input" id="newUserAgent" placeholder="输入User Agent">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeModal('addAccountModal')">取消</button>
+                <button class="btn btn-primary" onclick="saveNewAccount()">保存</button>
+            </div>
+        </div>
+    </div>
+    <!-- 编辑账号模态框 -->
+    <div class="modal" id="editAccountModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>编辑账号</h3>
+                <button class="modal-close" onclick="closeModal('editAccountModal')" title="关闭">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editAccountId">
+                <div class="form-group">
+                    <label class="form-label" for="editTeamId">Team ID</label>
+                    <input type="text" class="form-input" id="editTeamId" placeholder="输入Team ID">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="editSecureCses">Cookie中的__Secure-C_SES</label>
+                    <textarea class="form-textarea" id="editSecureCses" placeholder="输入Secure C Ses" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="editHostCoses">Cookie中的__Host-C_OSES</label>
+                    <textarea class="form-textarea" id="editHostCoses" placeholder="输入Host C Oses" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="editCsesidx">CSESIDX</label>
+                    <input type="text" class="form-input" id="editCsesidx" placeholder="输入CSESIDX">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="editUserAgent">User Agent</label>
+                    <input type="text" class="form-input" id="editUserAgent" placeholder="输入User Agent">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeModal('editAccountModal')">取消</button>
+                <button class="btn btn-primary" onclick="updateAccount()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 添加模型模态框 -->
+    <div class="modal" id="addModelModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>添加模型</h3>
+                <button class="modal-close" onclick="closeModal('addModelModal')" title="关闭">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="newModelId">模型ID</label>
+                        <input type="text" class="form-input" id="newModelId" placeholder="如: gemini-pro">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="newModelName">模型名称</label>
+                        <input type="text" class="form-input" id="newModelName" placeholder="如: Gemini Pro">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="newModelDesc">描述</label>
+                    <input type="text" class="form-input" id="newModelDesc" placeholder="模型描述">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="newContextLength">上下文长度</label>
+                        <input type="number" class="form-input" id="newContextLength" value="32768">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="newMaxTokens">最大Token</label>
+                        <input type="number" class="form-input" id="newMaxTokens" value="8192">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeModal('addModelModal')">取消</button>
+                <button class="btn btn-primary" onclick="saveNewModel()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 编辑模型模态框 -->
+    <div class="modal" id="editModelModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>编辑模型</h3>
+                <button class="modal-close" onclick="closeModal('editModelModal')" title="关闭">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editModelOriginalId">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="editModelId">模型ID</label>
+                        <input type="text" class="form-input" id="editModelId" placeholder="如: gemini-pro">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="editModelName">模型名称</label>
+                        <input type="text" class="form-input" id="editModelName" placeholder="如: Gemini Pro">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="editModelDesc">描述</label>
+                    <input type="text" class="form-input" id="editModelDesc" placeholder="模型描述">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label" for="editContextLength">上下文长度</label>
+                        <input type="number" class="form-input" id="editContextLength">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="editMaxTokens">最大Token</label>
+                        <input type="number" class="form-input" id="editMaxTokens">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeModal('editModelModal')">取消</button>
+                <button class="btn btn-primary" onclick="updateModel()">保存</button>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- Toast通知 -->
+    <div id="toastContainer" class="toast-container">
+        <!-- Toasts will be injected here by JS -->
+    </div>
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // [OPTIMIZATION] 1. 脚本微调以适应新的图标
+        function updateThemeIcon(theme) {
+            const iconContainer = document.getElementById('themeIconContainer');
+            if (iconContainer) {
+                const iconId = theme === 'dark' ? 'icon-sun' : 'icon-moon';
+                iconContainer.innerHTML = `<svg class="icon"><use xlink:href="#${iconId}"></use></svg>`;
+            }
+        }
+
+        // [OPTIMIZATION] 2. 改进Toast通知
+        let toastTimeout;
+        function showToast(message, type = 'info') {
+            const toast = document.getElementById('toast');
+            if (!toast) return;
+
+            let icon = '';
+            let borderType = type; // 'success', 'error', 'info'
+            switch(type) {
+                case 'success':
+                    icon = '<svg class="icon" style="color: var(--success);"><use xlink:href="#icon-check"></use></svg>';
+                    break;
+                case 'error':
+                    icon = '<svg class="icon" style="color: var(--danger);"><use xlink:href="#icon-x"></use></svg>';
+                    break;
+                default:
+                    icon = '<svg class="icon" style="color: var(--primary);"><use xlink:href="#icon-server"></use></svg>';
+                    borderType = 'primary';
+                    break;
+            }
+
+            toast.innerHTML = `${icon} <span class="toast-message">${message}</span>`;
+            toast.className = `toast show`;
+            toast.style.borderLeft = `4px solid var(--${borderType})`;
+
+            clearTimeout(toastTimeout);
+            toastTimeout = setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3500);
+        }
+
+        // =======================================================
+        // [FULL SCRIPT] 以下是完整的、未删减的功能性 JavaScript 代码
+        // =======================================================
+
+        // API 基础 URL
+        const API_BASE = '';
+
+        // 全局数据缓存
+        let accountsData = [];
+        let modelsData = [];
+        let configData = {};
+        let currentEditAccountId = null;
+        let currentEditModelId = null;
+
+        // --- 初始化 ---
+        document.addEventListener('DOMContentLoaded', () => {
+            initTheme();
+            loadAllData();
+            setInterval(checkServerStatus, 30000); // 每30秒检查一次服务状态
+        });
+
+        // --- 核心加载与渲染 ---
+        async function loadAllData() {
+            await Promise.all([
+                loadAccounts(),
+                loadModels(),
+                loadConfig(),
+                checkServerStatus()
+            ]);
+        }
+
+        // --- 主题控制 ---
+        function initTheme() {
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', savedTheme);
+            updateThemeIcon(savedTheme);
+        }
+
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme');
+            const newTheme = current === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeIcon(newTheme);
+        }
+
+        // --- 标签页控制 ---
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            
+            const tabBtn = document.querySelector(`[onclick="switchTab('${tabName}')"]`);
+            const tabContent = document.getElementById(tabName);
+            
+            if (tabBtn) tabBtn.classList.add('active');
+            if (tabContent) tabContent.classList.add('active');
+        }
+
+        // --- 状态检查 ---
+        async function checkServerStatus() {
+            const indicator = document.getElementById('serviceStatus');
+            if (!indicator) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/status`);
+                console.log('Server Status Response:', res);
+                if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+                const data = await res.json();
+                indicator.textContent = '服务运行中';
+                indicator.classList.remove('offline');
+                indicator.title = '服务连接正常 - ' + new Date().toLocaleString();
+            } catch (e) {
+                indicator.textContent = '服务离线';
+                indicator.classList.add('offline');
+                indicator.title = '无法连接到后端服务';
+            }
+        }
+
+        // --- 账号管理 (Accounts) ---
+        async function loadAccounts() {
+            try {
+                const res = await fetch(`${API_BASE}/api/accounts`);
+                const data = await res.json();
+                accountsData = data.accounts || [];
+                document.getElementById('currentIndex').textContent = data.current_index || 0;
+                renderAccounts();
+                updateAccountStats();
+            } catch (e) {
+                showToast('加载账号列表失败: ' + e.message, 'error');
+            }
+        }
+
+        function renderAccounts() {
+            const tbody = document.getElementById('accountsTableBody');
+            if (!tbody) return;
+
+            if (accountsData.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" class="empty-state">
+                    <div class="empty-state-icon"><svg class="icon"><use xlink:href="#icon-users"></use></svg></div>
+                    <h3>暂无账号</h3><p>点击 "添加账号" 按钮来创建一个。</p>
+                </td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = accountsData.map((acc, index) => `
+                <tr>
+                    <td>${index + 1}</td>
+                    <td><code>${acc.team_id || '-'}</code></td>
+                    <td title="${acc.user_agent}">${acc.user_agent ? acc.user_agent.substring(0, 30) + '...' : '-'}</td>
+                    <td><span class="badge ${acc.available ? 'badge-success' : 'badge-danger'}">${acc.available ? '可用' : '不可用'}</span></td>
+                    <td style="white-space: nowrap;">
+                        <button class="btn btn-sm ${acc.enabled !== false ? 'btn-warning' : 'btn-success'} btn-icon" onclick="toggleAccount(${acc.id})" title="${acc.enabled !== false ? '停用' : '启用'}"><svg class="icon" style="width:16px; height:16px;"><use xlink:href="#icon-${acc.enabled !== false ? 'pause' : 'play'}"></use></svg></button>
+                        <button class="btn btn-sm btn-outline btn-icon" onclick="testAccount(${acc.id})" title="测试连接"><svg class="icon" style="width:16px; height:16px;"><use xlink:href="#icon-zap"></use></svg></button>
+                        <button class="btn btn-sm btn-outline btn-icon" onclick="showEditAccountModal(${acc.id})" title="编辑"><svg class="icon" style="width:16px; height:16px;"><use xlink:href="#icon-settings"></use></svg></button>
+                        <button class="btn btn-sm btn-danger btn-icon" onclick="deleteAccount(${acc.id})" title="删除"><svg class="icon" style="width:16px; height:16px;"><use xlink:href="#icon-x"></use></svg></button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function updateAccountStats() {
+            document.getElementById('totalAccounts').textContent = accountsData.length;
+            document.getElementById('availableAccounts').textContent = accountsData.filter(a => a.available).length;
+            document.getElementById('unavailableAccounts').textContent = accountsData.length - accountsData.filter(a => a.available).length;
+        }
+
+        function showAddAccountModal() {
+            openModal('addAccountModal');
+        }
+
+        function showEditAccountModal(id) {
+            const acc = accountsData.find(a => a.id === id);
+            if (!acc) return;
+            
+            document.getElementById('editAccountId').value = id;
+            document.getElementById('editTeamId').value = acc.team_id || '';
+            document.getElementById('editSecureCses').value = acc.secure_c_ses || '';
+            document.getElementById('editHostCoses').value = acc.host_c_oses || '';
+            document.getElementById('editCsesidx').value = acc.csesidx || '';
+            document.getElementById('editUserAgent').value = acc.user_agent ? acc.user_agent.replace('...', '') : '';
+            
+            openModal('editAccountModal');
+        }
+
+        async function updateAccount() {
+            const id = document.getElementById('editAccountId').value;
+            const account = {};
+            
+            const teamId = document.getElementById('editTeamId').value;
+            const secureCses = document.getElementById('editSecureCses').value;
+            const hostCoses = document.getElementById('editHostCoses').value;
+            const csesidx = document.getElementById('editCsesidx').value;
+            const userAgent = document.getElementById('editUserAgent').value;
+            
+            if (teamId) account.team_id = teamId;
+            if (secureCses) account.secure_c_ses = secureCses;
+            if (hostCoses) account.host_c_oses = hostCoses;
+            if (csesidx) account.csesidx = csesidx;
+            if (userAgent) account.user_agent = userAgent;
+            
+            try {
+                const res = await fetch(`${API_BASE}/api/accounts/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(account)
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    showToast('账号更新成功', 'success');
+                    closeModal('editAccountModal');
+                    loadAccounts();
+                } else {
+                    showToast('更新失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch (e) {
+                showToast('更新失败: ' + e.message, 'error');
+            }
+        }
+
+        async function saveNewAccount() {
+            const teamId = document.getElementById('newTeamId').value;
+            const secureCses = document.getElementById('newSecureCses').value;
+            const hostCoses = document.getElementById('newHostCoses').value;
+            const csesidx = document.getElementById('newCsesidx').value;
+            const userAgent = document.getElementById('newUserAgent').value;
+
+            try {
+                const res = await fetch(`${API_BASE}/api/accounts`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        team_id: teamId, 
+                        "secure_c_ses": secureCses, 
+                        "host_c_oses": hostCoses, 
+                        "csesidx": csesidx, 
+                        "user_agent": userAgent })
+                });
+                if (!res.ok) throw new Error((await res.json()).detail);
+                showToast('账号添加成功!', 'success');
+                closeModal('addAccountModal');
+                loadAccounts();
+            } catch (e) {
+                showToast('添加失败: ' + e.message, 'error');
+            }
+        }
+        
+        async function deleteAccount(id) {
+            if (!confirm('确定要删除这个账号吗？')) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/accounts/${id}`, { method: 'DELETE' });
+                if (!res.ok) throw new Error((await res.json()).detail);
+                showToast('账号删除成功!', 'success');
+                loadAccounts();
+            } catch (e) {
+                showToast('删除失败: ' + e.message, 'error');
+            }
+        }
+
+        async function testAccount(id) {
+            showToast(`正在测试账号ID: ${id}...`, 'info');
+            try {
+                const res = await fetch(`${API_BASE}/api/accounts/${id}/test`);
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    showToast(`账号 ${id} 测试成功!`, 'success');
+                } else {
+                    throw new Error(data.detail || '未知错误');
+                }
+                loadAccounts();
+            } catch (e) {
+                showToast(`账号 ${id} 测试失败: ${e.message}`, 'error');
+            }
+        }
+
+        async function toggleAccount(id) {
+            const acc = accountsData.find(a => a.id === id);
+            const action = acc && acc.enabled !== false ? '停用' : '启用';
+            try {
+                const res = await fetch(`${API_BASE}/api/accounts/${id}/toggle`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    showToast(`账号 ${id} ${action}成功!`, 'success');
+                    loadAccounts();
+                } else {
+                    throw new Error(data.error || data.detail || '未知错误');
+                }
+            } catch (e) {
+                showToast(`账号 ${id} ${action}失败: ${e.message}`, 'error');
+            }
+        }
+
+        // --- 模型管理 (Models) ---
+        async function loadModels() {
+            try {
+                const res = await fetch(`${API_BASE}/api/models`);
+                const data = await res.json();
+                modelsData = data.models || [];
+                renderModels();
+            } catch (e) {
+                showToast('加载模型列表失败: ' + e.message, 'error');
+            }
+        }
+        
+        function renderModels() {
+            const tbody = document.getElementById('modelsTableBody');
+            if (!tbody) return;
+            if (modelsData.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="7" class="empty-state">
+                    <div class="empty-state-icon"><svg class="icon"><use xlink:href="#icon-robot"></use></svg></div>
+                    <h3>暂无模型</h3><p>点击 "添加模型" 按钮来创建一个。</p>
+                </td></tr>`;
+                return;
+            }
+            tbody.innerHTML = modelsData.map(model => `
+                <tr>
+                    <td><code>${model.id}</code></td>
+                    <td>${model.name}</td>
+                    <td title="${model.description}">${model.description ? model.description.substring(0, 40) + '...' : ''}</td>
+                    <td>${model.context_length}</td>
+                    <td>${model.max_tokens}</td>
+                    <td><span class="badge ${model.is_public ? 'badge-success' : 'badge-warning'}">${model.is_public ? '公共' : '私有'}</span></td>
+                    <td>
+                        <button class="btn btn-sm btn-outline btn-icon" onclick="showEditModelModal('${model.id}')" title="编辑">✏️</button>
+                        <button class="btn btn-sm btn-danger btn-icon" onclick="deleteModel('${model.id}')" title="删除">🗑️</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function showAddModelModal() {
+            openModal('addModelModal');
+        }
+
+        function showEditModelModal(id) {
+            const model = modelsData.find(m => m.id === id);
+            if (!model) return;
+            
+            document.getElementById('editModelId').value = id;
+            document.getElementById('editModelName').value = model.name || '';
+            document.getElementById('editModelDisplayName').value = model.display_name || '';
+            document.getElementById('editModelMaxTokens').value = model.max_tokens || '';
+            document.getElementById('editModelEnabled').checked = model.enabled !== false;
+            
+            openModal('editModelModal');
+        }
+
+        async function updateModel() {
+            const id = document.getElementById('editModelId').value;
+            const model = {
+                name: document.getElementById('editModelName').value,
+                display_name: document.getElementById('editModelDisplayName').value,
+                max_tokens: parseInt(document.getElementById('editModelMaxTokens').value) || 8096,
+                enabled: document.getElementById('editModelEnabled').checked
+            };
+            
+            try {
+                const res = await fetch(`${API_BASE}/api/models/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(model)
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    showToast('模型更新成功', 'success');
+                    closeModal('editModelModal');
+                    loadModels();
+                } else {
+                    showToast('更新失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch (e) {
+                showToast('更新失败: ' + e.message, 'error');
+            }
+        }
+
+        // ... (其他模型相关的JS函数，如 saveNewModel, showEditModelModal, deleteModel)
+        
+        // --- 系统设置 (Settings) ---
+        async function loadConfig() {
+            try {
+                const res = await fetch(`${API_BASE}/api/config`);
+                configData = await res.json();
+                document.getElementById('proxyUrl').value = configData.proxy || '';
+                document.getElementById('configJson').value = JSON.stringify(configData, null, 2);
+            } catch (e) {
+                showToast('加载配置失败: ' + e.message, 'error');
+            }
+        }
+
+        async function saveSettings() {
+            const proxyUrl = document.getElementById('proxyUrl').value;
+            try {
+                const res = await fetch(`${API_BASE}/api/config`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ proxy: proxyUrl })
+                });
+                if (!res.ok) throw new Error((await res.json()).detail);
+                showToast('设置保存成功!', 'success');
+                loadConfig();
+            } catch (e) {
+                showToast('保存失败: ' + e.message, 'error');
+            }
+        }
+
+        async function testProxy() {
+            const proxyUrl = document.getElementById('proxyUrl').value;
+            const proxyStatus = document.getElementById('proxyStatus');
+            proxyStatus.textContent = '测试中...';
+            proxyStatus.style.color = 'var(--text-muted)';
+            try {
+                const res = await fetch(`${API_BASE}/api/proxy/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ proxy: proxyUrl })
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    proxyStatus.textContent = `测试成功! (${data.delay_ms}ms)`;
+                    proxyStatus.style.color = 'var(--success)';
+                } else {
+                    throw new Error(data.detail);
+                }
+            } catch (e) {
+                proxyStatus.textContent = `测试失败: ${e.message}`;
+                proxyStatus.style.color = 'var(--danger)';
+            }
+        }
+
+        function refreshConfig() {
+            loadConfig();
+            showToast('配置已刷新', 'info');
+        }
+
+        function downloadConfig() {
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(configData, null, 2));
+            const downloadAnchorNode = document.createElement('a');
+            downloadAnchorNode.setAttribute("href", dataStr);
+            downloadAnchorNode.setAttribute("download", "business_gemini_session.json");
+            document.body.appendChild(downloadAnchorNode);
+            downloadAnchorNode.click();
+            downloadAnchorNode.remove();
+            showToast('配置文件已开始下载', 'success');
+        }
+        
+        function uploadConfig() {
+            document.getElementById('configFileInput').click();
+        }
+
+        function handleConfigUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                try {
+                    const newConfig = JSON.parse(e.target.result);
+                    const res = await fetch(`${API_BASE}/api/config/upload`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(newConfig)
+                    });
+                    if (!res.ok) throw new Error((await res.json()).detail);
+                    showToast('配置导入成功!', 'success');
+                    loadAllData();
+                } catch (err) {
+                    showToast('导入失败: ' + err.message, 'error');
+                }
+            };
+            reader.readAsText(file);
+        }
+        
+        // --- 模态框控制 ---
+        function openModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) modal.classList.add('show');
+        }
+
+        function closeModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) modal.classList.remove('show');
+        }
+
+        document.querySelectorAll('.modal').forEach(modal => {
+            modal.addEventListener('click', (e) => {
+                if (e.target.classList.contains('modal')) {
+                    closeModal(modal.id);
+                }
+            });
+        });
+    </script>
+
+</body>
+</html>

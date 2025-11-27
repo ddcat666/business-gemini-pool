@@ -5,6 +5,7 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   timestamp: string;
+  images?: Array<{ id: string; filename: string; mime_type: string }>;
 }
 
 const messages = signal<Message[]>([]);
@@ -156,6 +157,7 @@ export default function ChatInterface() {
       role: "assistant",
       content: data.choices[0]?.message?.content || "无响应",
       timestamp: new Date().toISOString(),
+      images: data.images, // 提取图片
     };
 
     messages.value = [...messages.value, aiMessage];
@@ -219,6 +221,26 @@ export default function ChatInterface() {
               }`}
             >
               <div class="whitespace-pre-wrap">{msg.content}</div>
+
+              {/* 显示生成的图片 */}
+              {msg.images && msg.images.length > 0 && (
+                <div class="mt-3 space-y-2">
+                  {msg.images.map((img, imgIdx) => (
+                    <div key={imgIdx} class="border rounded overflow-hidden bg-white">
+                      <img
+                        src={`/api/images/${img.id}`}
+                        alt={img.filename}
+                        class="max-w-full h-auto"
+                        loading="lazy"
+                      />
+                      <div class="text-xs p-2 bg-gray-50 text-gray-700">
+                        {img.filename}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div
                 class={`text-xs mt-1 ${
                   msg.role === "user" ? "text-blue-100" : "text-gray-500"

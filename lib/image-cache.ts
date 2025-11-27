@@ -95,4 +95,33 @@ export class ImageCacheManager {
     }
     return bytes;
   }
+
+  /**
+   * 保存下载的图片到缓存并返回缓存 ID
+   */
+  async saveDownloadedImage(
+    imageData: Uint8Array,
+    mimeType: string,
+    fileName: string
+  ): Promise<string> {
+    const cacheId = crypto.randomUUID();
+    const success = await this.cacheImage(cacheId, imageData, mimeType, fileName);
+
+    if (!success) {
+      console.warn(`Failed to cache image ${fileName} (too large)`);
+    }
+
+    return cacheId;
+  }
+
+  /**
+   * 获取图片的 data URL
+   */
+  async getImageDataUrl(cacheId: string): Promise<string | null> {
+    const image = await this.getImage(cacheId);
+    if (!image) return null;
+
+    const base64 = ImageCacheManager.toBase64(image.data);
+    return `data:${image.mime_type};base64,${base64}`;
+  }
 }

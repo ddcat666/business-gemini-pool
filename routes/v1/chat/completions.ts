@@ -5,6 +5,7 @@ import { ensureSession } from "../../../lib/session-manager.ts";
 import { streamChat } from "../../../lib/gemini-api.ts";
 import type { ChatCompletionRequest, ChatMessage } from "../../../lib/types.ts";
 import { requireAuth } from "../../../lib/auth.ts";
+import { ImageCacheManager } from "../../../lib/image-cache.ts";
 
 /**
  * OpenAI 兼容的聊天完成接口
@@ -53,11 +54,52 @@ export const handler: Handlers = {
             proxy,
           });
 
+          // 缓存图片并准备响应
+          const imageCacheManager = new ImageCacheManager(kv);
+          const imageMetadata: Array<{
+            id: string;
+            filename: string;
+            mime_type: string;
+          }> = [];
+
+          if (result.images && result.images.length > 0) {
+            console.log(`Caching ${result.images.length} images`);
+
+            for (const img of result.images) {
+              if (img.base64_data) {
+                try {
+                  // 将 base64 转为 Uint8Array
+                  const binaryString = atob(img.base64_data);
+                  const bytes = new Uint8Array(binaryString.length);
+                  for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                  }
+
+                  const cacheId = await imageCacheManager.saveDownloadedImage(
+                    bytes,
+                    img.mime_type,
+                    img.file_name || "image.png"
+                  );
+
+                  imageMetadata.push({
+                    id: cacheId,
+                    filename: img.file_name || "image.png",
+                    mime_type: img.mime_type,
+                  });
+
+                  console.log(`Cached image: ${cacheId} (${img.file_name})`);
+                } catch (err) {
+                  console.error("Failed to cache image:", err);
+                }
+              }
+            }
+          }
+
           // 成功获取响应
           if (stream) {
-            return createStreamResponse(result.text, model, messages);
+            return createStreamResponse(result.text, model, messages, imageMetadata);
           } else {
-            return createNonStreamResponse(result.text, model, messages);
+            return createNonStreamResponse(result.text, model, messages, imageMetadata);
           }
         } catch (error) {
           lastError = error as Error;
@@ -94,7 +136,12 @@ export const handler: Handlers = {
 /**
  * 创建流式响应
  */
-function createStreamResponse(text: string, model: string, messages: ChatMessage[]): Response {
+function createStreamResponse(
+  text: string,
+  model: string,
+  messages: ChatMessage[],
+  images?: Array<{ id: string; filename: string; mime_type: string }>
+): Response {
   const encoder = new TextEncoder();
   const id = `chatcmpl-${crypto.randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
@@ -164,7 +211,12 @@ function createStreamResponse(text: string, model: string, messages: ChatMessage
 /**
  * 创建非流式响应
  */
-function createNonStreamResponse(text: string, model: string, messages: ChatMessage[]): Response {
+function createNonStreamResponse(
+  text: string,
+  model: string,
+  messages: ChatMessage[],
+  images?: Array<{ id: string; filename: string; mime_type: string }>
+): Response {
   const id = `chatcmpl-${crypto.randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
 
@@ -172,11 +224,23 @@ function createNonStreamResponse(text: string, model: string, messages: ChatMess
   const estimateTokens = (str: string) => Math.ceil(str.length / 4);
 
   const promptTokens = messages.reduce((sum, msg) => {
-    const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+    const content = typeof msg.content === "string"
+      ? msg.content
+      : JSON.stringify(msg.content);
     return sum + estimateTokens(content);
   }, 0);
 
   const completionTokens = estimateTokens(text);
+
+  // 在文本中附加图片信息
+  let responseContent = text;
+  if (images && images.length > 0) {
+    responseContent += "\n\n[Generated Images]\n";
+    for (const img of images) {
+      responseContent +=
+        `- ${img.filename} (${img.mime_type}): /api/images/${img.id}\n`;
+    }
+  }
 
   return Response.json({
     id,
@@ -188,7 +252,7 @@ function createNonStreamResponse(text: string, model: string, messages: ChatMess
         index: 0,
         message: {
           role: "assistant",
-          content: text,
+          content: responseContent,
         },
         finish_reason: "stop",
       },
@@ -198,5 +262,6 @@ function createNonStreamResponse(text: string, model: string, messages: ChatMess
       completion_tokens: completionTokens,
       total_tokens: promptTokens + completionTokens,
     },
+    images: images, // 添加非标准字段
   });
 }
