@@ -1,5 +1,6 @@
 {
     "proxy": "http://127.0.0.1:7890",
+	"image_base_url": "http://127.0.0.1:8000/",
     "accounts": [
         {
             "team_id": "xxx",

@@ -1,6 +1,7 @@
 """Business Gemini OpenAPI 兼容服务
 整合JWT获取和聊天功能，提供OpenAPI接口
 支持多账号轮训
+支持图片输出（OpenAI格式）
 """
 
 import json
@@ -10,10 +11,14 @@ import hashlib
 import base64
 import uuid
 import threading
+import os
+import re
 import requests
 from pathlib import Path
 from datetime import datetime
-from flask import Flask, request, Response, jsonify, send_from_directory
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Any
+from flask import Flask, request, Response, jsonify, send_from_directory, abort
 from flask_cors import CORS
 
 # 禁用SSL警告
@@ -23,10 +28,16 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # 配置
 CONFIG_FILE = Path(__file__).parent / "business_gemini_session.json"
 
+# 图片缓存配置
+IMAGE_CACHE_DIR = Path(__file__).parent / "image"
+IMAGE_CACHE_HOURS = 1  # 图片缓存时间（小时）
+IMAGE_CACHE_DIR.mkdir(exist_ok=True)
+
 # API endpoints
 BASE_URL = "https://biz-discoveryengine.googleapis.com/v1alpha/locations/global"
 CREATE_SESSION_URL = f"{BASE_URL}/widgetCreateSession"
 STREAM_ASSIST_URL = f"{BASE_URL}/widgetStreamAssist"
+LIST_FILE_METADATA_URL = f"{BASE_URL}/widgetListSessionFileMetadata"
 GETOXSRF_URL = "https://business.gemini.google/auth/getoxsrf"
 
 # Flask应用
@@ -194,10 +205,7 @@ def get_jwt_for_account(account: dict, proxy: str) -> str:
     }
 
     resp = requests.get(url, headers=headers, proxies=proxies, verify=False, timeout=30)
-    # 检查响应状态
-    if resp.status_code != 200:
-        raise Exception(f"获取xsrfToken失败: {resp.status_code} {resp.text}")
-    
+
     # 处理Google安全前缀
     text = resp.text
     if text.startswith(")]}'\n") or text.startswith(")]}'"): 
@@ -286,14 +294,254 @@ def ensure_session_for_account(account_idx: int, account: dict):
         return state["session"], jwt, account.get("team_id")
 
 
-def stream_chat(jwt: str, sess_name: str, message: str, proxy: str, team_id: str):
-    """发送消息并流式接收响应"""
+# ==================== 图片处理功能 ====================
+
+@dataclass
+class ChatImage:
+    """表示生成的图片"""
+    url: Optional[str] = None
+    base64_data: Optional[str] = None
+    mime_type: str = "image/png"
+    local_path: Optional[str] = None
+    file_id: Optional[str] = None
+    file_name: Optional[str] = None
+
+
+@dataclass
+class ChatResponse:
+    """聊天响应，包含文本和图片"""
+    text: str = ""
+    images: List[ChatImage] = field(default_factory=list)
+    thoughts: List[str] = field(default_factory=list)
+
+
+def cleanup_expired_images():
+    """清理过期的缓存图片"""
+    if not IMAGE_CACHE_DIR.exists():
+        return
+    
+    now = time.time()
+    max_age_seconds = IMAGE_CACHE_HOURS * 3600
+    
+    for filepath in IMAGE_CACHE_DIR.iterdir():
+        if filepath.is_file():
+            try:
+                file_age = now - filepath.stat().st_mtime
+                if file_age > max_age_seconds:
+                    filepath.unlink()
+                    print(f"[图片缓存] 已删除过期图片: {filepath.name}")
+            except Exception as e:
+                print(f"[图片缓存] 删除失败: {filepath.name}, 错误: {e}")
+
+
+def save_image_to_cache(image_data: bytes, mime_type: str = "image/png", filename: Optional[str] = None) -> str:
+    """保存图片到缓存目录，返回文件名"""
+    IMAGE_CACHE_DIR.mkdir(exist_ok=True)
+    
+    # 确定文件扩展名
+    ext_map = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+    }
+    ext = ext_map.get(mime_type, ".png")
+    
+    if filename:
+        # 确保有正确的扩展名
+        if not any(filename.endswith(e) for e in ext_map.values()):
+            filename = f"{filename}{ext}"
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"gemini_{timestamp}_{uuid.uuid4().hex[:8]}{ext}"
+    
+    filepath = IMAGE_CACHE_DIR / filename
+    with open(filepath, "wb") as f:
+        f.write(image_data)
+    
+    return filename
+
+
+def extract_images_from_openai_content(content: Any) -> tuple[str, List[Dict]]:
+    """从OpenAI格式的content中提取文本和图片
+    
+    返回: (文本内容, 图片列表[{type: 'base64'|'url', data: ...}])
+    """
+    if isinstance(content, str):
+        return content, []
+    
+    if not isinstance(content, list):
+        return str(content), []
+    
+    text_parts = []
+    images = []
+    
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        
+        item_type = item.get("type", "")
+        
+        if item_type == "text":
+            text_parts.append(item.get("text", ""))
+        
+        elif item_type == "image_url":
+            image_url_obj = item.get("image_url", {})
+            if isinstance(image_url_obj, str):
+                url = image_url_obj
+            else:
+                url = image_url_obj.get("url", "")
+            
+            if url.startswith("data:"):
+                # base64格式: data:image/png;base64,xxxxx
+                match = re.match(r"data:([^;]+);base64,(.+)", url)
+                if match:
+                    mime_type = match.group(1)
+                    base64_data = match.group(2)
+                    images.append({
+                        "type": "base64",
+                        "mime_type": mime_type,
+                        "data": base64_data
+                    })
+            else:
+                # 普通URL
+                images.append({
+                    "type": "url",
+                    "url": url
+                })
+    
+    return "\n".join(text_parts), images
+
+
+def download_image_from_url(url: str, proxy: Optional[str] = None) -> tuple[bytes, str]:
+    """从URL下载图片，返回(图片数据, mime_type)"""
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    resp = requests.get(url, proxies=proxies, verify=False, timeout=60)
+    resp.raise_for_status()
+    
+    content_type = resp.headers.get("Content-Type", "image/png")
+    # 提取主mime类型
+    mime_type = content_type.split(";")[0].strip()
+    
+    return resp.content, mime_type
+
+
+def get_session_file_metadata(jwt: str, session_name: str, team_id: str, proxy: Optional[str] = None) -> Dict:
+    """获取会话中的文件元数据（AI生成的图片）"""
+    body = {
+        "configId": team_id,
+        "additionalParams": {"token": "-"},
+        "listSessionFileMetadataRequest": {
+            "name": session_name,
+            "filter": "file_origin_type = AI_GENERATED"
+        }
+    }
+    
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    resp = requests.post(
+        LIST_FILE_METADATA_URL,
+        headers=get_headers(jwt),
+        json=body,
+        proxies=proxies,
+        verify=False,
+        timeout=30
+    )
+    
+    if resp.status_code != 200:
+        print(f"[图片] 获取文件元数据失败: {resp.status_code}")
+        return {}
+    
+    data = resp.json()
+    # 返回 fileId -> metadata 的映射
+    result = {}
+    file_metadata_list = data.get("listSessionFileMetadataResponse", {}).get("fileMetadata", [])
+    for meta in file_metadata_list:
+        file_id = meta.get("fileId")
+        if file_id:
+            result[file_id] = meta
+    return result
+
+
+def build_download_url(session_name: str, file_id: str) -> str:
+    """构造正确的下载URL"""
+    return f"https://biz-discoveryengine.googleapis.com/v1alpha/{session_name}:downloadFile?fileId={file_id}&alt=media"
+
+
+def download_file_with_jwt(jwt: str, session_name: str, file_id: str, proxy: Optional[str] = None) -> bytes:
+    """使用JWT认证下载文件"""
+    url = build_download_url(session_name, file_id)
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    
+    resp = requests.get(
+        url,
+        headers=get_headers(jwt),
+        proxies=proxies,
+        verify=False,
+        timeout=120,
+        allow_redirects=True
+    )
+    
+    resp.raise_for_status()
+    content = resp.content
+    
+    # 检测是否为base64编码的内容
+    try:
+        text_content = content.decode("utf-8", errors="ignore").strip()
+        if text_content.startswith("iVBORw0KGgo") or text_content.startswith("/9j/"):
+            # 是base64编码，需要解码
+            return base64.b64decode(text_content)
+    except Exception:
+        pass
+    
+    return content
+
+
+def stream_chat_with_images(jwt: str, sess_name: str, message: str, images: List[Dict], 
+                            proxy: str, team_id: str) -> ChatResponse:
+    """发送消息并流式接收响应，支持图片输入输出
+    
+    Args:
+        jwt: JWT token
+        sess_name: 会话名称
+        message: 用户消息文本
+        images: 图片列表 [{type: 'base64'|'url', ...}]
+        proxy: 代理地址
+        team_id: 团队ID
+    
+    Returns:
+        ChatResponse 包含文本和图片
+    """
+    # 构建查询parts
+    query_parts = [{"text": message}]
+    
+    # 如果有输入图片，添加到parts中
+    for img in images:
+        if img.get("type") == "base64":
+            query_parts.append({
+                "inlineData": {
+                    "mimeType": img.get("mime_type", "image/png"),
+                    "data": img.get("data")
+                }
+            })
+        elif img.get("type") == "url":
+            # 先下载图片再转base64
+            try:
+                img_data, mime_type = download_image_from_url(img.get("url"), proxy)
+                query_parts.append({
+                    "inlineData": {
+                        "mimeType": mime_type,
+                        "data": base64.b64encode(img_data).decode("utf-8")
+                    }
+                })
+            except Exception as e:
+                print(f"[图片] 下载输入图片失败: {e}")
+    
     body = {
         "configId": team_id,
         "additionalParams": {"token": "-"},
         "streamAssistRequest": {
             "session": sess_name,
-            "query": {"parts": [{"text": message}]},
+            "query": {"parts": query_parts},
             "filter": "",
             "fileIds": [],
             "answerGenerationMode": "NORMAL",
@@ -330,26 +578,174 @@ def stream_chat(jwt: str, sess_name: str, message: str, proxy: str, team_id: str
             full_response += line.decode('utf-8') + "\n"
 
     # 解析响应
-    result_text = ""
+    result = ChatResponse()
+    texts = []
+    file_ids = []  # 收集需要下载的文件 {fileId, mimeType}
+    current_session = None
+    
     try:
         data_list = json.loads(full_response)
         for data in data_list:
-            if "streamAssistResponse" in data:
-                sar = data["streamAssistResponse"]
-                if "answer" in sar:
-                    answer = sar["answer"]
-                    if "replies" in answer:
-                        for reply in answer["replies"]:
-                            gc = reply.get("groundedContent", {})
-                            content = gc.get("content", {})
-                            text = content.get("text", "")
-                            thought = content.get("thought", False)
-                            if text and not thought:
-                                result_text += text
+            sar = data.get("streamAssistResponse")
+            if not sar:
+                continue
+            
+            # 获取session信息
+            session_info = sar.get("sessionInfo", {})
+            if session_info.get("session"):
+                current_session = session_info["session"]
+            
+            # 检查顶层的generatedImages
+            for gen_img in sar.get("generatedImages", []):
+                parse_generated_image(gen_img, result, proxy)
+            
+            answer = sar.get("answer") or {}
+            
+            # 检查answer级别的generatedImages
+            for gen_img in answer.get("generatedImages", []):
+                parse_generated_image(gen_img, result, proxy)
+            
+            for reply in answer.get("replies", []):
+                # 检查reply级别的generatedImages
+                for gen_img in reply.get("generatedImages", []):
+                    parse_generated_image(gen_img, result, proxy)
+                
+                gc = reply.get("groundedContent", {})
+                content = gc.get("content", {})
+                text = content.get("text", "")
+                thought = content.get("thought", False)
+                
+                # 检查file字段（图片生成的关键）
+                file_info = content.get("file")
+                if file_info and file_info.get("fileId"):
+                    file_ids.append({
+                        "fileId": file_info["fileId"],
+                        "mimeType": file_info.get("mimeType", "image/png"),
+                        "fileName": file_info.get("name")
+                    })
+                
+                # 解析图片数据
+                parse_image_from_content(content, result, proxy)
+                parse_image_from_content(gc, result, proxy)
+                
+                # 检查attachments
+                for att in reply.get("attachments", []) + gc.get("attachments", []) + content.get("attachments", []):
+                    parse_attachment(att, result, proxy)
+                
+                if text and not thought:
+                    texts.append(text)
+        
+        # 处理通过fileId引用的图片
+        if file_ids and current_session:
+            try:
+                file_metadata = get_session_file_metadata(jwt, current_session, team_id, proxy)
+                for finfo in file_ids:
+                    fid = finfo["fileId"]
+                    mime = finfo["mimeType"]
+                    fname = finfo.get("fileName")
+                    meta = file_metadata.get(fid)
+                    
+                    if meta:
+                        fname = fname or meta.get("name")
+                        session_path = meta.get("session") or current_session
+                    else:
+                        session_path = current_session
+                    
+                    try:
+                        image_data = download_file_with_jwt(jwt, session_path, fid, proxy)
+                        filename = save_image_to_cache(image_data, mime, fname)
+                        img = ChatImage(
+                            file_id=fid,
+                            file_name=filename,
+                            mime_type=mime,
+                            local_path=str(IMAGE_CACHE_DIR / filename)
+                        )
+                        result.images.append(img)
+                        print(f"[图片] 已保存: {filename}")
+                    except Exception as e:
+                        print(f"[图片] 下载失败 (fileId={fid}): {e}")
+            except Exception as e:
+                print(f"[图片] 获取文件元数据失败: {e}")
+                
     except json.JSONDecodeError:
         pass
 
-    return result_text
+    result.text = "".join(texts)
+    return result
+
+
+def parse_generated_image(gen_img: Dict, result: ChatResponse, proxy: Optional[str] = None):
+    """解析generatedImages中的图片"""
+    image_data = gen_img.get("image")
+    if not image_data:
+        return
+    
+    # 检查base64数据
+    b64_data = image_data.get("bytesBase64Encoded")
+    if b64_data:
+        try:
+            decoded = base64.b64decode(b64_data)
+            mime_type = image_data.get("mimeType", "image/png")
+            filename = save_image_to_cache(decoded, mime_type)
+            img = ChatImage(
+                base64_data=b64_data,
+                mime_type=mime_type,
+                file_name=filename,
+                local_path=str(IMAGE_CACHE_DIR / filename)
+            )
+            result.images.append(img)
+            print(f"[图片] 已保存: {filename}")
+        except Exception as e:
+            print(f"[图片] 解析base64失败: {e}")
+
+
+def parse_image_from_content(content: Dict, result: ChatResponse, proxy: Optional[str] = None):
+    """从content中解析图片"""
+    # 检查inlineData
+    inline_data = content.get("inlineData")
+    if inline_data:
+        b64_data = inline_data.get("data")
+        if b64_data:
+            try:
+                decoded = base64.b64decode(b64_data)
+                mime_type = inline_data.get("mimeType", "image/png")
+                filename = save_image_to_cache(decoded, mime_type)
+                img = ChatImage(
+                    base64_data=b64_data,
+                    mime_type=mime_type,
+                    file_name=filename,
+                    local_path=str(IMAGE_CACHE_DIR / filename)
+                )
+                result.images.append(img)
+                print(f"[图片] 已保存: {filename}")
+            except Exception as e:
+                print(f"[图片] 解析inlineData失败: {e}")
+
+
+def parse_attachment(att: Dict, result: ChatResponse, proxy: Optional[str] = None):
+    """解析attachment中的图片"""
+    # 检查是否是图片类型
+    mime_type = att.get("mimeType", "")
+    if not mime_type.startswith("image/"):
+        return
+    
+    # 检查base64数据
+    b64_data = att.get("data") or att.get("bytesBase64Encoded")
+    if b64_data:
+        try:
+            decoded = base64.b64decode(b64_data)
+            filename = att.get("name") or None
+            filename = save_image_to_cache(decoded, mime_type, filename)
+            img = ChatImage(
+                base64_data=b64_data,
+                mime_type=mime_type,
+                file_name=filename,
+                local_path=str(IMAGE_CACHE_DIR / filename)
+            )
+            result.images.append(img)
+            print(f"[图片] 已保存: {filename}")
+        except Exception as e:
+            print(f"[图片] 解析attachment失败: {e}")
 
 
 # ==================== OpenAPI 接口 ====================
@@ -388,31 +784,34 @@ def list_models():
 
 @app.route('/v1/chat/completions', methods=['POST'])
 def chat_completions():
-    """聊天对话接口"""
+    """聊天对话接口（支持图片输入输出）"""
     try:
+        # 每次请求时清理过期图片
+        cleanup_expired_images()
+        
         data = request.json
         messages = data.get('messages', [])
         stream = data.get('stream', False)
 
-        # 提取用户消息
+        # 提取用户消息和图片
         user_message = ""
+        input_images = []
+        
         for msg in messages:
             if msg.get('role') == 'user':
                 content = msg.get('content', '')
-                if isinstance(content, list):
-                    for item in content:
-                        if isinstance(item, dict) and item.get('type') == 'text':
-                            user_message = item.get('text', '')
-                            break
-                else:
-                    user_message = content
+                text, images = extract_images_from_openai_content(content)
+                if text:
+                    user_message = text
+                input_images.extend(images)
 
-        if not user_message:
+        if not user_message and not input_images:
             return jsonify({"error": "No user message found"}), 400
         
         # 轮训获取账号
         max_retries = len(account_manager.accounts)
         last_error = None
+        chat_response = None
         
         for _ in range(max_retries):
             try:
@@ -422,8 +821,8 @@ def chat_completions():
                 session, jwt, team_id = ensure_session_for_account(account_idx, account)
                 proxy = account_manager.config.get("proxy")
                 
-                # 发送请求
-                response_text = stream_chat(jwt, session, user_message, proxy, team_id)
+                # 发送请求（支持图片）
+                chat_response = stream_chat_with_images(jwt, session, user_message, input_images, proxy, team_id)
                 break
             except Exception as e:
                 last_error = e
@@ -431,6 +830,9 @@ def chat_completions():
         else:
             # 所有账号都失败
             return jsonify({"error": f"所有账号请求失败: {last_error}"}), 500
+
+        # 构建响应内容（包含图片）
+        response_content = build_openai_response_content(chat_response, request.host_url)
 
         if stream:
             # 流式响应
@@ -443,11 +845,11 @@ def chat_completions():
                     "model": "gemini-enterprise",
                     "choices": [{
                         "index": 0,
-                        "delta": {"content": response_text},
+                        "delta": {"content": response_content},
                         "finish_reason": None
                     }]
                 }
-                yield f"data: {json.dumps(chunk)}\n\n"
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                 
                 # 结束标记
                 end_chunk = {
@@ -461,7 +863,7 @@ def chat_completions():
                         "finish_reason": "stop"
                     }]
                 }
-                yield f"data: {json.dumps(end_chunk)}\n\n"
+                yield f"data: {json.dumps(end_chunk, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
 
             return Response(generate(), mimetype='text/event-stream')
@@ -476,20 +878,89 @@ def chat_completions():
                     "index": 0,
                     "message": {
                         "role": "assistant",
-                        "content": response_text
+                        "content": response_content
                     },
                     "finish_reason": "stop"
                 }],
                 "usage": {
                     "prompt_tokens": len(user_message),
-                    "completion_tokens": len(response_text),
-                    "total_tokens": len(user_message) + len(response_text)
+                    "completion_tokens": len(chat_response.text),
+                    "total_tokens": len(user_message) + len(chat_response.text)
                 }
             }
             return jsonify(response)
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+def get_image_base_url(fallback_host_url: str) -> str:
+    """获取图片基础URL
+    
+    优先使用配置文件中的 image_base_url，否则使用请求的 host_url
+    """
+    configured_url = account_manager.config.get("image_base_url", "").strip()
+    if configured_url:
+        # 确保以 / 结尾
+        if not configured_url.endswith("/"):
+            configured_url += "/"
+        return configured_url
+    return fallback_host_url
+
+
+def build_openai_response_content(chat_response: ChatResponse, host_url: str) -> str:
+    """构建OpenAI格式的响应内容
+    
+    返回纯文本，如果有图片则将图片URL追加到文本末尾
+    """
+    result_text = chat_response.text
+    
+    # 如果有图片，将图片URL追加到文本中
+    if chat_response.images:
+        base_url = get_image_base_url(host_url)
+        image_urls = []
+        
+        for img in chat_response.images:
+            if img.file_name:
+                image_url = f"{base_url}image/{img.file_name}"
+                image_urls.append(image_url)
+        
+        if image_urls:
+            # 在文本末尾添加图片URL
+            if result_text:
+                result_text += "\n\n"
+            result_text += "\n".join(image_urls)
+    
+    return result_text
+
+
+# ==================== 图片服务接口 ====================
+
+@app.route('/image/<path:filename>')
+def serve_image(filename):
+    """提供缓存图片的访问"""
+    # 安全检查：防止路径遍历
+    if '..' in filename or filename.startswith('/'):
+        abort(404)
+    
+    filepath = IMAGE_CACHE_DIR / filename
+    if not filepath.exists():
+        abort(404)
+    
+    # 确定Content-Type
+    ext = filepath.suffix.lower()
+    mime_types = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+    }
+    mime_type = mime_types.get(ext, 'application/octet-stream')
+    
+    return send_from_directory(IMAGE_CACHE_DIR, filename, mimetype=mime_type)
 
 
 @app.route('/health', methods=['GET'])
@@ -498,7 +969,7 @@ def health_check():
     return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
 
 
-@app.route('/api/status', methods=['GET'])
+@app.route('/v1/status', methods=['GET'])
 def system_status():
     """获取系统状态"""
     total, available = account_manager.get_account_count()
@@ -522,15 +993,10 @@ def system_status():
 # ==================== 管理接口 ====================
 
 @app.route('/')
-@app.route('/index.html')
 def index():
     """返回管理页面"""
     return send_from_directory('.', 'index.html')
 
-@app.route('/chat_history.html')
-def chat_history():
-    """返回聊天记录页面"""
-    return send_from_directory('.', 'chat_history.html')
 
 @app.route('/api/accounts', methods=['GET'])
 def get_accounts():
@@ -647,7 +1113,7 @@ def toggle_account(account_id):
     return jsonify({"success": True, "available": not current})
 
 
-@app.route('/api/accounts/<int:account_id>/test', methods=['GET'])
+@app.route('/api/accounts/<int:account_id>/test', methods=['POST'])
 def test_account(account_id):
     """测试账号JWT获取"""
     if account_id < 0 or account_id >= len(account_manager.accounts):
@@ -808,6 +1274,7 @@ def print_startup_info():
     """打印启动信息"""
     print("="*60)
     print("Business Gemini OpenAPI 服务 (多账号轮训版)")
+    print("支持图片输入输出 (OpenAI格式)")
     print("="*60)
     
     # 加载配置
@@ -820,6 +1287,11 @@ def print_startup_info():
     if proxy:
         proxy_available = check_proxy(proxy)
         print(f"  状态: {'✓ 可用' if proxy_available else '✗ 不可用'}")
+    
+    # 图片缓存信息
+    print(f"\n[图片缓存]")
+    print(f"  目录: {IMAGE_CACHE_DIR}")
+    print(f"  缓存时间: {IMAGE_CACHE_HOURS} 小时")
     
     # 账号信息
     total, available = account_manager.get_account_count()
@@ -843,9 +1315,10 @@ def print_startup_info():
     
     print(f"\n[接口列表]")
     print("  GET  /v1/models           - 获取模型列表")
-    print("  POST /v1/chat/completions - 聊天对话")
+    print("  POST /v1/chat/completions - 聊天对话 (支持图片)")
     print("  GET  /v1/status           - 系统状态")
     print("  GET  /health              - 健康检查")
+    print("  GET  /image/<filename>    - 获取缓存图片")
     print("\n" + "="*60)
     print("启动服务...")
 
