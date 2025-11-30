@@ -663,7 +663,7 @@
             <button class="theme-toggle clear" onclick="clearChat()" title="清空对话">
                 🗑️ 清空
             </button>
-            <button class="theme-toggle home" onclick="window.location.href='/'" title="返回首页">
+            <button class="theme-toggle home" onclick="window.location.href='./'" title="返回首页">
                 <span>🏠&nbsp;返回首页</span>
             </button>
             <button class="theme-toggle" onclick="toggleTheme()" title="切换主题">
@@ -713,6 +713,9 @@
 
     <script>
         console.log('JavaScript 开始加载...');
+        // API 基础 URL
+        const API_BASE = '.';
+
         // ==================== 全局状态 ====================
         let chatHistory = [];
         let isLoading = false;
@@ -902,7 +905,7 @@
         // ==================== 获取模型列表 ====================
         async function loadModelList() {
             try {
-                const response = await fetch('/api/models');
+                const response = await fetch(`${API_BASE}/api/models`);
                 if (!response.ok) {
                     throw new Error('获取模型列表失败');
                 }
@@ -949,7 +952,7 @@
         // ==================== 获取账号列表 ====================
         async function loadAccountList() {
             try {
-                const response = await fetch('/api/accounts');
+                const response = await fetch(`${API_BASE}/api/accounts`);
                 if (!response.ok) throw new Error('获取账号列表失败');
                 const data = await response.json();
                 const accounts = data.accounts || [];
@@ -1072,7 +1075,7 @@
             abortController = new AbortController();
             console.log('开始发送流式请求...');
 
-            const response = await fetch('/v1/chat/completions', {
+            const response = await fetch(`${API_BASE}/v1/chat/completions`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1151,7 +1154,7 @@
 
             abortController = new AbortController();
 
-            const response = await fetch('/v1/chat/completions', {
+            const response = await fetch(`${API_BASE}/v1/chat/completions`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1602,7 +1605,7 @@
                 formData.append('file', file);
                 formData.append('purpose', 'assistants');
                 
-                const response = await fetch('/v1/files', {
+                const response = await fetch(`${API_BASE}/v1/files`, {
                     method: 'POST',
                     body: formData
                 });
@@ -1680,7 +1683,7 @@
             }
             
             // 可选：调用删除API
-            fetch(`/v1/files/${fileId}`, { method: 'DELETE' }).catch(console.error);
+            fetch(`${API_BASE}/v1/files/${fileId}`, { method: 'DELETE' }).catch(console.error);
         }
 
         function getUploadedFileIds() {
