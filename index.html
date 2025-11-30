@@ -1272,6 +1272,13 @@
         }
 
         function showAddAccountModal() {
+            // 清空表单字段
+            document.getElementById('newAccountJson').value = '';
+            document.getElementById('newTeamId').value = '';
+            document.getElementById('newSecureCses').value = '';
+            document.getElementById('newHostCoses').value = '';
+            document.getElementById('newCsesidx').value = '';
+            document.getElementById('newUserAgent').value = '';
             openModal('addAccountModal');
         }
 
