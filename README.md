@@ -39,6 +39,8 @@ curl --location --request POST 'http://127.0.0.1:8000/v1/chat/completions' \
 - **流式响应**: 支持 SSE (Server-Sent Events) 流式输出
 - **代理支持**: 支持 HTTP/HTTPS 代理配置
 - **JWT 自动管理**: 自动获取和刷新 JWT Token
+- **System Instruction**: 支持 OpenAI 格式的 system 角色消息
+- **对话隔离**: 每次请求独立的会话上下文，支持多轮对话历史
 
 ### 管理功能
 - **Web 控制台**: 美观的 Web 管理界面，支持明暗主题切换
@@ -270,6 +272,42 @@ curl -X POST http://127.0.0.1:8000/v1/chat/completions \
     "stream": true
   }'
 ```
+
+### System Instruction（系统设定）
+
+支持 OpenAI 标准的 system 角色消息，用于设定 AI 的行为：
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-enterprise",
+    "messages": [
+      {"role": "system", "content": "你是一只可爱的猫咪，每句话结尾都要加喵~"},
+      {"role": "user", "content": "你好"}
+    ]
+  }'
+```
+
+### 多轮对话（对话历史）
+
+支持发送完整的对话历史，AI 会理解上下文：
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-enterprise",
+    "messages": [
+      {"role": "system", "content": "你是一个友好的助手"},
+      {"role": "user", "content": "我的名字是小明"},
+      {"role": "assistant", "content": "你好小明！很高兴认识你！"},
+      {"role": "user", "content": "我的名字是什么？"}
+    ]
+  }'
+```
+
+> **说明**: 每次 API 请求都会创建新的会话，不同请求之间互不影响。同一请求内的所有消息会作为完整对话发送给 AI。
 
 ### 带图片对话
 

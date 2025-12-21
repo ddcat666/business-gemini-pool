@@ -1598,16 +1598,36 @@ def chat_completions():
 
         # 提取用户消息、图片和文件ID
         user_message = ""
+        system_instruction = ""  # System Instruction 内容
+        conversation_parts = []  # 收集完整对话历史
         input_images = []
         input_file_ids = []  # OpenAI file_id 列表
         
         # 处理标准 OpenAI messages 格式
         for msg in messages:
-            if msg.get('role') == 'user':
-                content = msg.get('content', '')
+            role = msg.get('role')
+            content = msg.get('content', '')
+            
+            # 处理 system 角色消息
+            if role == 'system':
+                if isinstance(content, str):
+                    system_instruction = content
+                elif isinstance(content, list):
+                    # 处理数组格式的 content
+                    system_parts = []
+                    for item in content:
+                        if isinstance(item, dict) and item.get('type') == 'text':
+                            system_parts.append(item.get('text', ''))
+                        elif isinstance(item, str):
+                            system_parts.append(item)
+                    system_instruction = '\n'.join(system_parts)
+            
+            # 处理 user 角色消息
+            elif role == 'user':
                 text, images = extract_images_from_openai_content(content)
                 if text:
-                    user_message = text
+                    conversation_parts.append(f"[User]: {text}")
+                    user_message = text  # 保留最后一条用于验证
                 input_images.extend(images)
                 
                 # 提取文件ID（支持多种格式）
@@ -1624,6 +1644,20 @@ def chat_completions():
                                 fid = file_obj.get('file_id') or file_obj.get('id')
                                 if fid:
                                     input_file_ids.append(fid)
+            
+            # 处理 assistant 角色消息（对话历史）
+            elif role == 'assistant':
+                if isinstance(content, str) and content:
+                    conversation_parts.append(f"[Assistant]: {content}")
+                elif isinstance(content, list):
+                    assistant_text = []
+                    for item in content:
+                        if isinstance(item, dict) and item.get('type') == 'text':
+                            assistant_text.append(item.get('text', ''))
+                        elif isinstance(item, str):
+                            assistant_text.append(item)
+                    if assistant_text:
+                        conversation_parts.append(f"[Assistant]: {' '.join(assistant_text)}")
         
         # 处理替代 prompts 格式（支持内联 base64 图片）
         # 格式: {"prompts": [{"role": "user", "text": "...", "files": [{"data": "data:image...", "type": "image"}]}]}
@@ -1652,6 +1686,19 @@ def chat_completions():
         if not user_message and not input_images and not gemini_file_ids:
             return jsonify({"error": "No user message found"}), 400
         
+        # 构建完整的消息（包含对话历史）
+        # 将 system instruction 和对话历史合并
+        final_message_parts = []
+        if system_instruction:
+            final_message_parts.append(f"[System Instruction]\n{system_instruction}")
+        if conversation_parts:
+            final_message_parts.append("[Conversation History]")
+            final_message_parts.extend(conversation_parts)
+        
+        # 如果有对话历史，使用完整对话；否则使用单条用户消息
+        if final_message_parts:
+            user_message = "\n\n".join(final_message_parts)
+        
         # 检查是否指定了特定账号
         specified_account_id = data.get('account_id')
         
@@ -1673,8 +1720,11 @@ def chat_completions():
             chat_response = None
             account_idx = specified_account_id
             try:
-                session, jwt, team_id = ensure_session_for_account(account_idx, account)
+                # 对话隔离：每次请求创建新的 session，不复用缓存的 session
+                jwt = ensure_jwt_for_account(account_idx, account)
                 proxy = get_proxy()
+                team_id = account.get("team_id")
+                session = create_chat_session(jwt, team_id, proxy)
                 
                 for img in input_images:
                     uploaded_file_id = upload_inline_image_to_gemini(jwt, session, team_id, img, proxy)
@@ -1705,8 +1755,11 @@ def chat_completions():
                 account_idx = None
                 try:
                     account_idx, account = account_manager.get_next_account()
-                    session, jwt, team_id = ensure_session_for_account(account_idx, account)
+                    # 对话隔离：每次请求创建新的 session，不复用缓存的 session
+                    jwt = ensure_jwt_for_account(account_idx, account)
                     proxy = get_proxy()
+                    team_id = account.get("team_id")
+                    session = create_chat_session(jwt, team_id, proxy)
                     
                     # 上传内联图片获取 fileId
                     for img in input_images:
