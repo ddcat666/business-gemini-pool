@@ -131,6 +131,11 @@ class NoAvailableAccount(AccountError):
     """无可用账号异常"""
 
 
+class UnsupportedFileTypeError(Exception):
+    """不支持的文件类型异常，不需要重试"""
+    pass
+
+
 def get_admin_secret_key() -> str:
     """获取/初始化后台密钥"""
     global ADMIN_SECRET_KEY
@@ -277,7 +282,7 @@ class AccountManager:
         self.config = None
         self.accounts = []  # 账号列表
         self.current_index = 0  # 当前轮训索引
-        self.account_states = {}  # 账号状态: {index: {jwt, jwt_time, session, available, cooldown_until, cooldown_reason}}
+        self.account_states = {}  # 账号状态: {index: {jwt, jwt_time, session, available, cooldown_until, cooldown_reason, model_cooldowns: {model_id: {until, reason}}}}
         self.lock = threading.Lock()
         self.auth_error_cooldown = AUTH_ERROR_COOLDOWN_SECONDS
         self.rate_limit_cooldown = RATE_LIMIT_COOLDOWN_SECONDS
@@ -307,7 +312,8 @@ class AccountManager:
                         "session": None,
                         "available": available,
                         "cooldown_until": acc.get("cooldown_until"),
-                        "cooldown_reason": acc.get("unavailable_reason") or acc.get("cooldown_reason") or ""
+                        "cooldown_reason": acc.get("unavailable_reason") or acc.get("cooldown_reason") or "",
+                        "model_cooldowns": {}  # 按模型冷却: {model_id: {until, reason}}
                     }
         return self.config
     
@@ -359,13 +365,69 @@ class AccountManager:
                 print(f"[!] 账号 {index} 进入冷却 {cooldown_seconds} 秒: {reason}")
 
     def _is_in_cooldown(self, index: int, now_ts: Optional[float] = None) -> bool:
-        """检查账号是否处于冷却期"""
+        """检查账号是否处于冷却期（全局冷却）"""
         now_ts = now_ts or time.time()
         state = self.account_states.get(index, {})
         cooldown_until = state.get("cooldown_until")
         if not cooldown_until:
             return False
         return now_ts < cooldown_until
+
+    def mark_account_model_cooldown(self, index: int, model_id: str, reason: str = "", cooldown_seconds: Optional[int] = None):
+        """针对特定模型设置账号冷却，其他模型不受影响"""
+        if cooldown_seconds is None:
+            cooldown_seconds = self.rate_limit_cooldown
+
+        with self.lock:
+            if 0 <= index < len(self.accounts):
+                now_ts = time.time()
+                new_until = now_ts + cooldown_seconds
+                state = self.account_states.setdefault(index, {})
+                model_cooldowns = state.setdefault("model_cooldowns", {})
+                
+                current_cd = model_cooldowns.get(model_id, {})
+                current_until = current_cd.get("until") or 0
+                # 如果已有更长的冷却，则不重复更新
+                if current_until > now_ts and current_until >= new_until:
+                    return
+
+                until = max(new_until, current_until)
+                model_cooldowns[model_id] = {"until": until, "reason": reason}
+                print(f"[!] 账号 {index} 模型 {model_id} 进入冷却 {cooldown_seconds} 秒: {reason}")
+
+    def _is_model_in_cooldown(self, index: int, model_id: str, now_ts: Optional[float] = None) -> bool:
+        """检查账号的特定模型是否处于冷却期"""
+        now_ts = now_ts or time.time()
+        state = self.account_states.get(index, {})
+        model_cooldowns = state.get("model_cooldowns", {})
+        model_cd = model_cooldowns.get(model_id, {})
+        cooldown_until = model_cd.get("until")
+        if not cooldown_until:
+            return False
+        return now_ts < cooldown_until
+
+    def get_next_model_cooldown_info(self, model_id: str) -> Optional[dict]:
+        """获取指定模型最近即将结束冷却的账号信息"""
+        now_ts = time.time()
+        candidates = []
+        for idx, state in self.account_states.items():
+            if not state.get("available", True):
+                continue
+            # 检查全局冷却
+            if self._is_in_cooldown(idx, now_ts):
+                global_until = state.get("cooldown_until")
+                candidates.append((global_until, idx, "全局冷却"))
+                continue
+            # 检查模型冷却
+            model_cooldowns = state.get("model_cooldowns", {})
+            model_cd = model_cooldowns.get(model_id, {})
+            model_until = model_cd.get("until")
+            if model_until and model_until > now_ts:
+                candidates.append((model_until, idx, model_cd.get("reason", "")))
+        if not candidates:
+            return None
+        cooldown_until, idx, reason = min(candidates, key=lambda x: x[0])
+        return {"index": idx, "cooldown_until": cooldown_until, "reason": reason}
 
     def get_next_cooldown_info(self) -> Optional[dict]:
         """获取最近即将结束冷却的账号信息"""
@@ -387,8 +449,8 @@ class AccountManager:
             return False
         return not self._is_in_cooldown(index)
     
-    def get_available_accounts(self):
-        """获取可用账号列表"""
+    def get_available_accounts(self, model_id: str = None):
+        """获取可用账号列表，支持按模型过滤"""
         now_ts = time.time()
         available_accounts = []
         for i, acc in enumerate(self.accounts):
@@ -397,18 +459,26 @@ class AccountManager:
                 continue
             if self._is_in_cooldown(i, now_ts):
                 continue
+            # 如果指定了模型，检查该模型是否在冷却
+            if model_id and self._is_model_in_cooldown(i, model_id, now_ts):
+                continue
             available_accounts.append((i, acc))
         return available_accounts
     
-    def get_next_account(self):
-        """轮训获取下一个可用账号"""
+    def get_next_account(self, model_id: str = None):
+        """轮训获取下一个可用账号，支持按模型过滤"""
         with self.lock:
-            available = self.get_available_accounts()
+            available = self.get_available_accounts(model_id)
             if not available:
-                cooldown_info = self.get_next_cooldown_info()
+                # 先检查模型级别的冷却
+                if model_id:
+                    cooldown_info = self.get_next_model_cooldown_info(model_id)
+                else:
+                    cooldown_info = self.get_next_cooldown_info()
                 if cooldown_info:
                     remaining = int(max(0, cooldown_info["cooldown_until"] - time.time()))
-                    raise NoAvailableAccount(f"没有可用的账号（最近冷却账号 {cooldown_info['index']}，约 {remaining} 秒后可重试）")
+                    model_hint = f" (模型: {model_id})" if model_id else ""
+                    raise NoAvailableAccount(f"没有可用的账号{model_hint}（最近冷却账号 {cooldown_info['index']}，约 {remaining} 秒后可重试）")
                 raise NoAvailableAccount("没有可用的账号")
             
             # 轮训选择
@@ -416,6 +486,7 @@ class AccountManager:
             idx, account = available[self.current_index]
             self.current_index = (self.current_index + 1) % len(available)
             return idx, account
+
     
     def get_account_count(self):
         """获取账号数量统计"""
@@ -753,7 +824,28 @@ def upload_file_to_gemini(jwt: str, session_name: str, team_id: str,
     
     Returns:
         str: Gemini 返回的 fileId
+    
+    Raises:
+        UnsupportedFileTypeError: 不支持的文件类型，不需要重试
     """
+    # Gemini 支持的图片类型白名单（不包括 GIF）
+    SUPPORTED_IMAGE_TYPES = {
+        "image/png", "image/jpeg", "image/jpg", "image/webp",
+        "image/heic", "image/heif"
+    }
+    # 其他支持的文件类型
+    SUPPORTED_OTHER_TYPES = {
+        "application/pdf", "text/plain", "text/csv", "text/html",
+        "application/json", "application/xml"
+    }
+    
+    # 检查是否是支持的类型
+    if mime_type.startswith("image/"):
+        if mime_type not in SUPPORTED_IMAGE_TYPES:
+            raise UnsupportedFileTypeError(f"不支持的图片格式: {mime_type}。支持的格式: PNG, JPEG, WebP, HEIC")
+    elif mime_type not in SUPPORTED_OTHER_TYPES and not mime_type.startswith("text/"):
+        print(f"[警告] MIME类型 {mime_type} 可能不被支持，尝试上传...")
+    
     start_time = time.time()
     print(f"[DEBUG][upload_file_to_gemini] 开始上传文件: {filename}, MIME类型: {mime_type}, 文件大小: {len(file_content)} bytes")
     
@@ -963,11 +1055,22 @@ def extract_images_from_openai_content(content: Any) -> tuple[str, List[Dict]]:
                     "url": url
                 })
         
-        # 支持直接的 image 类型（带 data 字段）
-        elif item_type == "image" and item.get("data"):
-            parsed = parse_base64_data_url(item.get("data"))
-            if parsed:
-                images.append(parsed)
+        # 支持直接的 image 类型
+        elif item_type == "image":
+            # 格式1: data 字段包含完整的 data URL (data:image/png;base64,...)
+            if item.get("data"):
+                parsed = parse_base64_data_url(item.get("data"))
+                if parsed:
+                    images.append(parsed)
+            # 格式2: image 字段包含纯 base64 字符串，mediaType 字段包含 MIME 类型
+            elif item.get("image"):
+                base64_data = item.get("image")
+                mime_type = item.get("mediaType", "image/png")
+                images.append({
+                    "type": "base64",
+                    "mime_type": mime_type,
+                    "data": base64_data
+                })
     
     return "\n".join(text_parts), images
 
@@ -1055,6 +1158,184 @@ def download_file_with_jwt(jwt: str, session_name: str, file_id: str, proxy: Opt
     return content
 
 
+def stream_chat_generator(jwt: str, sess_name: str, message: str, 
+                          proxy: str, team_id: str, file_ids: List[str] = None):
+    """真正的流式聊天生成器，边接收边 yield 文本片段
+    
+    Gemini 的流式响应格式：
+    - 动态增长的 JSON 数组
+    - 开始：发送 `[`
+    - 中间：每个块是 JSON 对象，块之间用 `\n,` 分隔
+    - 结束：以 `]]` 结束
+    
+    Yields:
+        dict: {"type": "text", "content": str} 或 {"type": "done", "session": str, "file_ids": list}
+    """
+    query_parts = [{"text": message}]
+    request_file_ids = file_ids if file_ids else []
+    
+    body = {
+        "configId": team_id,
+        "additionalParams": {"token": "-"},
+        "streamAssistRequest": {
+            "session": sess_name,
+            "query": {"parts": query_parts},
+            "filter": "",
+            "fileIds": request_file_ids,
+            "answerGenerationMode": "NORMAL",
+            "assistGenerationConfig":{
+                "modelId":"gemini-3-pro-preview"
+            },
+            "toolsSpec": {
+                "webGroundingSpec": {},
+                "toolRegistry": "default_tool_registry",
+                "imageGenerationSpec": {},
+                "videoGenerationSpec": {}
+            },
+            "languageCode": "zh-CN",
+            "userMetadata": {"timeZone": "Etc/GMT-8"},
+            "assistSkippingMode": "REQUEST_ASSIST"
+        }
+    }
+
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    try:
+        resp = requests.post(
+            STREAM_ASSIST_URL,
+            headers=get_headers(jwt),
+            json=body,
+            proxies=proxies,
+            verify=False,
+            timeout=120,
+            stream=True
+        )
+    except requests.RequestException as e:
+        raise AccountRequestError(f"聊天请求失败: {e}") from e
+
+    if resp.status_code != 200:
+        raise_for_account_response(resp, "聊天请求")
+
+    # 用于收集图片相关信息（流式结束后处理）
+    pending_file_ids = []
+    current_session = None
+    buffer = ""
+    
+    # 使用 iter_content 逐块读取，而不是 iter_lines
+    for chunk in resp.iter_content(chunk_size=1024, decode_unicode=True):
+        if not chunk:
+            continue
+        
+        # 如果 chunk 是 bytes，解码为字符串
+        if isinstance(chunk, bytes):
+            chunk = chunk.decode('utf-8', errors='ignore')
+        
+        buffer += chunk
+        
+        # 循环查找分隔符 \n, （Gemini 的块分隔方式）
+        while "\n," in buffer:
+            part, buffer = buffer.split("\n,", 1)
+            part = part.strip()
+            
+            # 处理起始的 [ 符号
+            if part.startswith('['):
+                part = part[1:].strip()
+            
+            if not part:
+                continue
+            
+            # 尝试解析为 JSON
+            try:
+                data = json.loads(part)
+                sar = data.get("streamAssistResponse")
+                if not sar:
+                    continue
+                
+                # 获取session信息
+                session_info = sar.get("sessionInfo", {})
+                if session_info.get("session"):
+                    current_session = session_info["session"]
+                
+                answer = sar.get("answer") or {}
+                
+                for reply in answer.get("replies", []):
+                    gc = reply.get("groundedContent", {})
+                    content = gc.get("content", {})
+                    text = content.get("text", "")
+                    thought = content.get("thought", False)
+                    
+                    # 检查file字段（图片生成）
+                    file_info = content.get("file")
+                    if file_info and file_info.get("fileId"):
+                        pending_file_ids.append({
+                            "fileId": file_info["fileId"],
+                            "mimeType": file_info.get("mimeType", "image/png"),
+                            "fileName": file_info.get("name")
+                        })
+                    
+                    # yield 文本内容（非思考内容）
+                    if text and not thought:
+                        yield {"type": "text", "content": text}
+                        
+            except json.JSONDecodeError:
+                # JSON 解析失败，跳过这个块
+                continue
+            except Exception as e:
+                print(f"[流式] 解析块出错: {e}")
+                continue
+    
+    # 处理 buffer 中剩余的内容（最后一个块）
+    if buffer:
+        # 去掉结尾的 ]] 或 ]
+        buffer = buffer.strip()
+        if buffer.endswith(']]'):
+            buffer = buffer[:-2].strip()
+        elif buffer.endswith(']'):
+            buffer = buffer[:-1].strip()
+        
+        # 处理起始的 [ 符号
+        if buffer.startswith('['):
+            buffer = buffer[1:].strip()
+        
+        if buffer:
+            try:
+                data = json.loads(buffer)
+                sar = data.get("streamAssistResponse")
+                if sar:
+                    session_info = sar.get("sessionInfo", {})
+                    if session_info.get("session"):
+                        current_session = session_info["session"]
+                    
+                    answer = sar.get("answer") or {}
+                    
+                    for reply in answer.get("replies", []):
+                        gc = reply.get("groundedContent", {})
+                        content = gc.get("content", {})
+                        text = content.get("text", "")
+                        thought = content.get("thought", False)
+                        
+                        file_info = content.get("file")
+                        if file_info and file_info.get("fileId"):
+                            pending_file_ids.append({
+                                "fileId": file_info["fileId"],
+                                "mimeType": file_info.get("mimeType", "image/png"),
+                                "fileName": file_info.get("name")
+                            })
+                        
+                        if text and not thought:
+                            yield {"type": "text", "content": text}
+            except json.JSONDecodeError:
+                pass
+            except Exception as e:
+                print(f"[流式] 处理剩余buffer出错: {e}")
+    
+    # 发送完成信号，附带需要后续处理的图片信息
+    yield {
+        "type": "done", 
+        "session": current_session, 
+        "file_ids": pending_file_ids
+    }
+
+
 def upload_inline_image_to_gemini(jwt: str, session_name: str, team_id: str, 
                                    image_data: Dict, proxy: str = None) -> Optional[str]:
     """上传内联图片到 Gemini，返回 fileId"""
@@ -1076,6 +1357,9 @@ def upload_inline_image_to_gemini(jwt: str, session_name: str, team_id: str,
         return upload_file_to_gemini(jwt, session_name, team_id, file_content, filename, mime_type, proxy)
     except AccountError:
         # 让账号相关错误向上抛出，以便触发冷却
+        raise
+    except UnsupportedFileTypeError:
+        # 不支持的文件类型，向上抛出让调用方处理
         raise
     except Exception:
         return None
@@ -1504,6 +1788,10 @@ def upload_file():
                 last_error = e
                 print(f"[文件上传] 无可用账号: {e}")
                 break
+            except UnsupportedFileTypeError as e:
+                # 不支持的文件类型，直接返回错误，不重试
+                print(f"[文件上传] 不支持的文件类型: {e}")
+                return jsonify({"error": {"message": str(e), "type": "invalid_request_error"}}), 400
             except Exception as e:
                 last_error = e
                 print(f"[文件上传] 第{retry_idx+1}次尝试失败: {type(e).__name__}: {e}")
@@ -1595,19 +1883,41 @@ def chat_completions():
         messages = data.get('messages', [])
         prompts = data.get('prompts', [])  # 支持替代格式
         stream = data.get('stream', False)
+        requested_model = data.get('model', 'gemini-enterprise')  # 提取请求的模型，用于按模型冷却
+
 
         # 提取用户消息、图片和文件ID
         user_message = ""
+        system_instruction = ""  # System Instruction 内容
+        conversation_parts = []  # 收集完整对话历史
         input_images = []
         input_file_ids = []  # OpenAI file_id 列表
         
         # 处理标准 OpenAI messages 格式
         for msg in messages:
-            if msg.get('role') == 'user':
-                content = msg.get('content', '')
+            role = msg.get('role')
+            content = msg.get('content', '')
+            
+            # 处理 system 角色消息
+            if role == 'system':
+                if isinstance(content, str):
+                    system_instruction = content
+                elif isinstance(content, list):
+                    # 处理数组格式的 content
+                    system_parts = []
+                    for item in content:
+                        if isinstance(item, dict) and item.get('type') == 'text':
+                            system_parts.append(item.get('text', ''))
+                        elif isinstance(item, str):
+                            system_parts.append(item)
+                    system_instruction = '\n'.join(system_parts)
+            
+            # 处理 user 角色消息
+            elif role == 'user':
                 text, images = extract_images_from_openai_content(content)
                 if text:
-                    user_message = text
+                    conversation_parts.append(f"[User]: {text}")
+                    user_message = text  # 保留最后一条用于验证
                 input_images.extend(images)
                 
                 # 提取文件ID（支持多种格式）
@@ -1624,6 +1934,20 @@ def chat_completions():
                                 fid = file_obj.get('file_id') or file_obj.get('id')
                                 if fid:
                                     input_file_ids.append(fid)
+            
+            # 处理 assistant 角色消息（对话历史）
+            elif role == 'assistant':
+                if isinstance(content, str) and content:
+                    conversation_parts.append(f"[Assistant]: {content}")
+                elif isinstance(content, list):
+                    assistant_text = []
+                    for item in content:
+                        if isinstance(item, dict) and item.get('type') == 'text':
+                            assistant_text.append(item.get('text', ''))
+                        elif isinstance(item, str):
+                            assistant_text.append(item)
+                    if assistant_text:
+                        conversation_parts.append(f"[Assistant]: {' '.join(assistant_text)}")
         
         # 处理替代 prompts 格式（支持内联 base64 图片）
         # 格式: {"prompts": [{"role": "user", "text": "...", "files": [{"data": "data:image...", "type": "image"}]}]}
@@ -1652,9 +1976,261 @@ def chat_completions():
         if not user_message and not input_images and not gemini_file_ids:
             return jsonify({"error": "No user message found"}), 400
         
+        # 构建完整的消息（包含对话历史）
+        # 将 system instruction 和对话历史合并
+        final_message_parts = []
+        if system_instruction:
+            final_message_parts.append(f"[System Instruction]\n{system_instruction}")
+        if conversation_parts:
+            final_message_parts.append("[Conversation History]")
+            final_message_parts.extend(conversation_parts)
+        
+        # 如果有对话历史，使用完整对话；否则使用单条用户消息
+        if final_message_parts:
+            user_message = "\n\n".join(final_message_parts)
+        
         # 检查是否指定了特定账号
         specified_account_id = data.get('account_id')
         
+        # 流式模式需要特殊处理：边收边发
+        if stream:
+            # 获取账号信息
+            account_idx = None
+            jwt = None
+            session = None
+            team_id = None
+            proxy = None
+            last_error = None
+            
+            if specified_account_id is not None:
+                # 使用指定的账号
+                accounts = account_manager.accounts
+                if specified_account_id < 0 or specified_account_id >= len(accounts):
+                    return jsonify({"error": f"无效的账号ID: {specified_account_id}"}), 400
+                account = accounts[specified_account_id]
+                if not account.get('enabled', True):
+                    return jsonify({"error": f"账号 {specified_account_id} 已禁用"}), 400
+                cooldown_until = account.get('cooldown_until', 0)
+                if cooldown_until > time.time():
+                    return jsonify({"error": f"账号 {specified_account_id} 正在冷却中，请稍后重试"}), 429
+                
+                account_idx = specified_account_id
+                try:
+                    jwt = ensure_jwt_for_account(account_idx, account)
+                    proxy = get_proxy()
+                    team_id = account.get("team_id")
+                    session = create_chat_session(jwt, team_id, proxy)
+                    
+                    for img in input_images:
+                        uploaded_file_id = upload_inline_image_to_gemini(jwt, session, team_id, img, proxy)
+                        if uploaded_file_id:
+                            gemini_file_ids.append(uploaded_file_id)
+                except (AccountRateLimitError, AccountAuthError, AccountRequestError) as e:
+                    last_error = e
+                    account_manager.mark_account_cooldown(account_idx, str(e), account_manager.generic_error_cooldown)
+                except UnsupportedFileTypeError as e:
+                    # 不支持的文件类型，直接返回错误，不重试
+                    return jsonify({"error": {"message": str(e), "type": "invalid_request_error"}}), 400
+                except Exception as e:
+                    last_error = e
+            else:
+                # 轮训获取账号（按模型过滤）
+                available_accounts = account_manager.get_available_accounts(requested_model)
+                if not available_accounts:
+                    next_cd = account_manager.get_next_model_cooldown_info(requested_model)
+                    wait_msg = ""
+                    if next_cd:
+                        wait_msg = f"（模型 {requested_model} 最近冷却账号 {next_cd['index']}，约 {int(next_cd['cooldown_until']-time.time())} 秒后可重试）"
+                    return jsonify({"error": f"模型 {requested_model} 没有可用的账号{wait_msg}"}), 429
+
+                max_retries = len(available_accounts)
+                
+                for retry_idx in range(max_retries):
+                    try:
+                        account_idx, account = account_manager.get_next_account(requested_model)
+                        jwt = ensure_jwt_for_account(account_idx, account)
+                        proxy = get_proxy()
+                        team_id = account.get("team_id")
+                        session = create_chat_session(jwt, team_id, proxy)
+                        
+                        for img in input_images:
+                            uploaded_file_id = upload_inline_image_to_gemini(jwt, session, team_id, img, proxy)
+                            if uploaded_file_id:
+                                gemini_file_ids.append(uploaded_file_id)
+                        break  # 成功获取账号和session
+                    except AccountRateLimitError as e:
+                        last_error = e
+                        if account_idx is not None:
+                            pt_wait = seconds_until_next_pt_midnight()
+                            cooldown_seconds = max(account_manager.rate_limit_cooldown, pt_wait)
+                            account_manager.mark_account_model_cooldown(account_idx, requested_model, str(e), cooldown_seconds)
+                        print(f"[聊天流式] 第{retry_idx+1}次尝试失败(限额): 模型={requested_model}, {e}")
+                        account_idx = None
+                        continue
+                    except AccountAuthError as e:
+                        last_error = e
+                        if account_idx is not None:
+                            account_manager.mark_account_cooldown(account_idx, str(e), account_manager.auth_error_cooldown)
+                        print(f"[聊天流式] 第{retry_idx+1}次尝试失败(凭证): {e}")
+                        account_idx = None
+                        continue
+                    except AccountRequestError as e:
+                        last_error = e
+                        if account_idx is not None:
+                            account_manager.mark_account_cooldown(account_idx, str(e), account_manager.generic_error_cooldown)
+                        print(f"[聊天流式] 第{retry_idx+1}次尝试失败(请求异常): {e}")
+                        account_idx = None
+                        continue
+                    except UnsupportedFileTypeError as e:
+                        # 不支持的文件类型，直接返回错误，不重试
+                        return jsonify({"error": {"message": str(e), "type": "invalid_request_error"}}), 400
+                    except Exception as e:
+                        last_error = e
+                        print(f"[聊天流式] 第{retry_idx+1}次尝试失败: {type(e).__name__}: {e}")
+                        account_idx = None
+                        if retry_idx == 0 and account_idx is None:
+                            break
+                        continue
+            
+            if jwt is None or session is None:
+                error_message = last_error or "没有可用的账号"
+                status_code = 429 if isinstance(last_error, (AccountRateLimitError, NoAvailableAccount)) else 500
+                return jsonify({"error": f"所有账号请求失败: {error_message}"}), status_code
+
+            # 获取使用的账号csesidx
+            used_account_csesidx = None
+            if account_idx is not None and account_idx < len(account_manager.accounts):
+                used_account = account_manager.accounts[account_idx]
+                used_account_csesidx = used_account.get('csesidx', f'账号{account_idx}')
+
+            # 真正的流式响应生成器
+            def stream_generate():
+                chunk_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+                first_chunk = True
+                
+                try:
+                    for event in stream_chat_generator(jwt, session, user_message, proxy, team_id, gemini_file_ids):
+                        if event["type"] == "text":
+                            content = event["content"]
+                            chunk = {
+                                "id": chunk_id,
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": "gemini-enterprise",
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"content": content} if not first_chunk else {"role": "assistant", "content": content},
+                                    "finish_reason": None
+                                }]
+                            }
+                            # 第一个 chunk 附带账号信息
+                            if first_chunk:
+                                chunk["account_csesidx"] = used_account_csesidx
+                                first_chunk = False
+                            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                        
+                        elif event["type"] == "done":
+                            # 处理图片（如果有的话，在流结束时发送图片URL）
+                            pending_file_ids = event.get("file_ids", [])
+                            current_session = event.get("session")
+                            
+                            if pending_file_ids and current_session:
+                                try:
+                                    file_metadata = get_session_file_metadata(jwt, current_session, team_id, proxy)
+                                    for finfo in pending_file_ids:
+                                        fid = finfo["fileId"]
+                                        mime = finfo["mimeType"]
+                                        fname = finfo.get("fileName")
+                                        meta = file_metadata.get(fid)
+                                        
+                                        if meta:
+                                            fname = fname or meta.get("name")
+                                            session_path = meta.get("session") or current_session
+                                        else:
+                                            session_path = current_session
+                                        
+                                        try:
+                                            image_data = download_file_with_jwt(jwt, session_path, fid, proxy)
+                                            
+                                            if is_base64_output_mode():
+                                                b64_data = base64.b64encode(image_data).decode("utf-8")
+                                                # 使用 Markdown 图片语法，与非流式模式一致
+                                                image_content = f"![image](data:{mime};base64,{b64_data})"
+                                            else:
+                                                filename = save_image_to_cache(image_data, mime, fname)
+                                                base_url = get_image_base_url(request.host_url)
+                                                # 使用 Markdown 图片语法，与非流式模式一致
+                                                image_content = f"![image]({base_url}image/{filename})"
+                                            
+                                            # 发送图片作为一个chunk
+                                            img_chunk = {
+                                                "id": chunk_id,
+                                                "object": "chat.completion.chunk",
+                                                "created": int(time.time()),
+                                                "model": "gemini-enterprise",
+                                                "choices": [{
+                                                    "index": 0,
+                                                    "delta": {"content": f"\n\n{image_content}"},
+                                                    "finish_reason": None
+                                                }]
+                                            }
+                                            yield f"data: {json.dumps(img_chunk, ensure_ascii=False)}\n\n"
+                                        except Exception as e:
+                                            print(f"[流式] 图片下载失败 (fileId={fid}): {e}")
+                                except Exception as e:
+                                    print(f"[流式] 获取文件元数据失败: {e}")
+                            
+                            # 发送结束标记
+                            end_chunk = {
+                                "id": chunk_id,
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": "gemini-enterprise",
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {},
+                                    "finish_reason": "stop"
+                                }]
+                            }
+                            yield f"data: {json.dumps(end_chunk, ensure_ascii=False)}\n\n"
+                            yield "data: [DONE]\n\n"
+                
+                except AccountRateLimitError as e:
+                    if account_idx is not None:
+                        pt_wait = seconds_until_next_pt_midnight()
+                        cooldown_seconds = max(account_manager.rate_limit_cooldown, pt_wait)
+                        account_manager.mark_account_model_cooldown(account_idx, requested_model, str(e), cooldown_seconds)
+                    error_chunk = {
+                        "id": chunk_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": "gemini-enterprise",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": f"\n\n[错误: 账号限额] {e}"},
+                            "finish_reason": "stop"
+                        }]
+                    }
+                    yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                except Exception as e:
+                    error_chunk = {
+                        "id": chunk_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": "gemini-enterprise",
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": f"\n\n[错误] {e}"},
+                            "finish_reason": "stop"
+                        }]
+                    }
+                    yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+            
+            return Response(stream_generate(), mimetype='text/event-stream')
+        
+        # 非流式模式（保持原有逻辑）
         if specified_account_id is not None:
             # 使用指定的账号
             accounts = account_manager.accounts
@@ -1673,8 +2249,11 @@ def chat_completions():
             chat_response = None
             account_idx = specified_account_id
             try:
-                session, jwt, team_id = ensure_session_for_account(account_idx, account)
+                # 对话隔离：每次请求创建新的 session，不复用缓存的 session
+                jwt = ensure_jwt_for_account(account_idx, account)
                 proxy = get_proxy()
+                team_id = account.get("team_id")
+                session = create_chat_session(jwt, team_id, proxy)
                 
                 for img in input_images:
                     uploaded_file_id = upload_inline_image_to_gemini(jwt, session, team_id, img, proxy)
@@ -1685,17 +2264,20 @@ def chat_completions():
             except (AccountRateLimitError, AccountAuthError, AccountRequestError) as e:
                 last_error = e
                 account_manager.mark_account_cooldown(account_idx, str(e), account_manager.generic_error_cooldown)
+            except UnsupportedFileTypeError as e:
+                # 不支持的文件类型，直接返回错误，不重试
+                return jsonify({"error": {"message": str(e), "type": "invalid_request_error"}}), 400
             except Exception as e:
                 last_error = e
         else:
-            # 轮训获取账号
-            available_accounts = account_manager.get_available_accounts()
+            # 轮训获取账号（按模型过滤）
+            available_accounts = account_manager.get_available_accounts(requested_model)
             if not available_accounts:
-                next_cd = account_manager.get_next_cooldown_info()
+                next_cd = account_manager.get_next_model_cooldown_info(requested_model)
                 wait_msg = ""
                 if next_cd:
-                    wait_msg = f"（最近冷却账号 {next_cd['index']}，约 {int(next_cd['cooldown_until']-time.time())} 秒后可重试）"
-                return jsonify({"error": f"没有可用的账号{wait_msg}"}), 429
+                    wait_msg = f"（模型 {requested_model} 最近冷却账号 {next_cd['index']}，约 {int(next_cd['cooldown_until']-time.time())} 秒后可重试）"
+                return jsonify({"error": f"模型 {requested_model} 没有可用的账号{wait_msg}"}), 429
 
             max_retries = len(available_accounts)
             last_error = None
@@ -1704,9 +2286,12 @@ def chat_completions():
             for retry_idx in range(max_retries):
                 account_idx = None
                 try:
-                    account_idx, account = account_manager.get_next_account()
-                    session, jwt, team_id = ensure_session_for_account(account_idx, account)
+                    account_idx, account = account_manager.get_next_account(requested_model)
+                    # 对话隔离：每次请求创建新的 session，不复用缓存的 session
+                    jwt = ensure_jwt_for_account(account_idx, account)
                     proxy = get_proxy()
+                    team_id = account.get("team_id")
+                    session = create_chat_session(jwt, team_id, proxy)
                     
                     # 上传内联图片获取 fileId
                     for img in input_images:
@@ -1721,8 +2306,9 @@ def chat_completions():
                     if account_idx is not None:
                         pt_wait = seconds_until_next_pt_midnight()
                         cooldown_seconds = max(account_manager.rate_limit_cooldown, pt_wait)
-                        account_manager.mark_account_cooldown(account_idx, str(e), cooldown_seconds)
-                    print(f"[聊天] 第{retry_idx+1}次尝试失败(限额): {e}")
+                        # 按模型冷却，其他模型仍可使用该账号
+                        account_manager.mark_account_model_cooldown(account_idx, requested_model, str(e), cooldown_seconds)
+                    print(f"[聊天] 第{retry_idx+1}次尝试失败(限额): 模型={requested_model}, {e}")
                     continue
                 except AccountAuthError as e:
                     last_error = e
@@ -1736,6 +2322,9 @@ def chat_completions():
                         account_manager.mark_account_cooldown(account_idx, str(e), account_manager.generic_error_cooldown)
                     print(f"[聊天] 第{retry_idx+1}次尝试失败(请求异常): {e}")
                     continue
+                except UnsupportedFileTypeError as e:
+                    # 不支持的文件类型，直接返回错误，不重试
+                    return jsonify({"error": {"message": str(e), "type": "invalid_request_error"}}), 400
                 except Exception as e:
                     last_error = e
                     print(f"[聊天] 第{retry_idx+1}次尝试失败: {type(e).__name__}: {e}")
@@ -1757,63 +2346,28 @@ def chat_completions():
         # 构建响应内容（包含图片）
         response_content = build_openai_response_content(chat_response, request.host_url)
 
-        if stream:
-            # 流式响应
-            def generate():
-                chunk_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-                chunk = {
-                    "id": chunk_id,
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": "gemini-enterprise",
-                    "account_csesidx": used_account_csesidx,
-                    "choices": [{
-                        "index": 0,
-                        "delta": {"content": response_content},
-                        "finish_reason": None
-                    }]
-                }
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                
-                # 结束标记
-                end_chunk = {
-                    "id": chunk_id,
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": "gemini-enterprise",
-                    "choices": [{
-                        "index": 0,
-                        "delta": {},
-                        "finish_reason": "stop"
-                    }]
-                }
-                yield f"data: {json.dumps(end_chunk, ensure_ascii=False)}\n\n"
-                yield "data: [DONE]\n\n"
-
-            return Response(generate(), mimetype='text/event-stream')
-        else:
-            # 非流式响应
-            response = {
-                "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": "gemini-enterprise",
-                "account_csesidx": used_account_csesidx,
-                "choices": [{
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": response_content
-                    },
-                    "finish_reason": "stop"
-                }],
-                "usage": {
-                    "prompt_tokens": len(user_message),
-                    "completion_tokens": len(chat_response.text),
-                    "total_tokens": len(user_message) + len(chat_response.text)
-                }
+        # 非流式响应
+        response = {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": "gemini-enterprise",
+            "account_csesidx": used_account_csesidx,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": response_content
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": len(user_message),
+                "completion_tokens": len(chat_response.text),
+                "total_tokens": len(user_message) + len(chat_response.text)
             }
-            return jsonify(response)
+        }
+        return jsonify(response)
 
     except Exception as e:
         import traceback
@@ -1972,6 +2526,20 @@ def get_accounts():
         state = account_manager.account_states.get(i, {})
         cooldown_until = state.get("cooldown_until")
         cooldown_active = bool(cooldown_until and cooldown_until > now_ts)
+        
+        # 处理按模型冷却信息
+        model_cooldowns_raw = state.get("model_cooldowns", {})
+        model_cooldowns_active = {}
+        for model_id, cd_info in model_cooldowns_raw.items():
+            cd_until = cd_info.get("until")
+            if cd_until and cd_until > now_ts:
+                model_cooldowns_active[model_id] = {
+                    "until": cd_until,
+                    "reason": cd_info.get("reason", ""),
+                    "remaining": int(cd_until - now_ts)
+                }
+        
+        # 如果有模型冷却但没有全局冷却，账号仍然可用（对其他模型）
         effective_available = state.get("available", True) and not cooldown_active
 
         # 返回完整值用于编辑，前端显示时再截断
@@ -1986,9 +2554,11 @@ def get_accounts():
             "unavailable_reason": acc.get("unavailable_reason", ""),
             "cooldown_until": cooldown_until if cooldown_active else None,
             "cooldown_reason": state.get("cooldown_reason", ""),
+            "model_cooldowns": model_cooldowns_active,  # 按模型冷却信息
             "has_jwt": state.get("jwt") is not None
         })
     return jsonify({"accounts": accounts_data})
+
 
 
 @app.route('/api/accounts', methods=['POST'])

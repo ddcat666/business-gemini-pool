@@ -1261,18 +1261,44 @@
         }
 
         function renderNextRefresh(acc) {
-            if (!acc || !acc.cooldown_until) return '';
-            const now = Date.now();
-            const ts = acc.cooldown_until * 1000;
-            if (ts <= now) return '';
-            const next = new Date(ts);
-            const remaining = Math.max(0, ts - now);
-            const minutes = Math.floor(remaining / 60000);
-            const label = minutes >= 60
-                ? `${Math.floor(minutes / 60)}小时${minutes % 60}分`
-                : `${minutes}分`;
-            return `<span class="cooldown-hint">下次恢复: ${next.toLocaleString()}（约${label}）</span>`;
+            let html = '';
+            
+            // 全局冷却
+            if (acc && acc.cooldown_until) {
+                const now = Date.now();
+                const ts = acc.cooldown_until * 1000;
+                if (ts > now) {
+                    const next = new Date(ts);
+                    const remaining = Math.max(0, ts - now);
+                    const minutes = Math.floor(remaining / 60000);
+                    const label = minutes >= 60
+                        ? `${Math.floor(minutes / 60)}小时${minutes % 60}分`
+                        : `${minutes}分`;
+                    html += `<span class="cooldown-hint" style="color: var(--danger);">全局冷却: ${next.toLocaleString()}（约${label}）</span>`;
+                }
+            }
+            
+            // 按模型冷却
+            if (acc && acc.model_cooldowns && Object.keys(acc.model_cooldowns).length > 0) {
+                const modelCooldowns = [];
+                for (const [modelId, cdInfo] of Object.entries(acc.model_cooldowns)) {
+                    const remaining = cdInfo.remaining || 0;
+                    if (remaining > 0) {
+                        const minutes = Math.floor(remaining / 60);
+                        const label = minutes >= 60
+                            ? `${Math.floor(minutes / 60)}小时${minutes % 60}分`
+                            : `${minutes}分`;
+                        modelCooldowns.push(`<span class="badge badge-warning" style="margin-left:4px;" title="${cdInfo.reason || ''}">${modelId}: ${label}</span>`);
+                    }
+                }
+                if (modelCooldowns.length > 0) {
+                    html += `<div class="model-cooldowns" style="margin-top:4px;font-size:12px;">模型冷却: ${modelCooldowns.join('')}</div>`;
+                }
+            }
+            
+            return html;
         }
+
 
         function showAddAccountModal() {
             // 清空表单字段

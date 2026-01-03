@@ -2,5 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.log
+.env
 business_gemini_session.json
+*.json
+!*.example.json
 image/
